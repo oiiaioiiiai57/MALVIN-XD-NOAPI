@@ -52,7 +52,7 @@ async function fetchFromClutchPlay(query, conText) {
     const { MalvinTechApi, MalvinApiKey } = conText;
     const res = await axios.get(`${MalvinTechApi}/download/clutchplay`, {
         params: { apikey: MalvinApiKey, query },
-        timeout: 20000,
+        timeout: 120000,
         validateStatus: () => true,
     });
     if (res.status >= 400 || res.data?.status === false) {
@@ -68,7 +68,7 @@ async function fetchFromClutchYoutube(videoUrl, conText, quality = "720") {
     const { MalvinTechApi, MalvinApiKey } = conText;
     const res = await axios.get(`${MalvinTechApi}/download/clutchyt`, {
         params: { apikey: MalvinApiKey, url: videoUrl, quality },
-        timeout: 30000,
+        timeout: 180000,
         validateStatus: () => true,
     });
     if (res.status >= 400 || res.data?.status === false) {
