@@ -1,0 +1,14 @@
+node_modules/
+.env
+session/
+auth_info/
+auth/
+baileys_store/
+store/
+king/temp/*
+!king/temp/.gitkeep
+*.db
+*.sqlite
+*.log
+.DS_Store
+Thumbs.db
