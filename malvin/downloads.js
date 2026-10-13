@@ -15,6 +15,7 @@ const {
     axios = require("axios"),
     cheerio = require("cheerio"),
     { sendButtons } = require("malvin-btns"),
+    { classifyApiError } = require("../king/mxdcore2"),
     { fancy } = require("../king/fancyFont");
 
 const AX = axios.create({ timeout: 45000, validateStatus: () => true });
@@ -365,7 +366,175 @@ cobaltCommand({ pattern: "tiktok2", aliases: ["tt2"], emoji: "🎵", site: "TikT
 cobaltCommand({ pattern: "tiktok5", aliases: ["tt5"], emoji: "🎵", site: "TikTok", domains: ["tiktok.com"] });
 cobaltCommand({ pattern: "tiktok7", aliases: ["tt7"], emoji: "🎵", site: "TikTok", domains: ["tiktok.com"] });
 cobaltCommand({ pattern: "ig", aliases: ["insta", "instadl", "igdl", "instagram"], emoji: "📸", site: "Instagram", domains: ["instagram.com"] });
-cobaltCommand({ pattern: "yt", aliases: ["ytdl", "youtube", "ytmp4", "ytmp3"], emoji: "▶️", site: "YouTube", domains: ["youtube.com", "youtu.be"] });
+mxd(
+    {
+        pattern: "yt",
+        category: "downloader",
+        react: "▶️",
+        aliases: ["ytdl", "youtube", "ytmp4", "ytmp3"],
+        description: "Download YouTube videos/audio",
+    },
+    async (from, Malvin, conText) => {
+        const {
+            q,
+            mek,
+            reply,
+            react,
+            botName,
+            botFooter,
+            mxdBuffer,
+            toAudio,
+            MalvinTechApi,
+            MalvinApiKey,
+        } = conText;
+
+        if (!q) {
+            await react("❌");
+            return reply("Please provide a YouTube URL");
+        }
+
+        if (!q.includes("youtube.com") && !q.includes("youtu.be")) {
+            await react("❌");
+            return reply("Please provide a valid YouTube URL");
+        }
+
+        try {
+            await react("⏳");
+
+            // Confirmed working: /download/youtube2 is a direct passthrough
+            // to Hector's YouTube worker, just wrapped in this API's
+            // standard {status, data, timestamp} envelope — the inner
+            // shape itself is unchanged from before the migration.
+            const apiRes = await axios.get(`${MalvinTechApi}/download/youtube2`, {
+                params: { apikey: MalvinApiKey, url: q },
+                timeout: 30000,
+                validateStatus: () => true,
+            });
+            if (apiRes.status >= 400 || apiRes.data?.status === false) {
+                const { rawMessage } = classifyApiError(apiRes.status, apiRes.data);
+                throw new Error(rawMessage);
+            }
+            const result = apiRes.data?.data;
+
+            // Confirmed real shape: { creator, title, thumbnail, audio,
+            // videos: {144,240,360,480,720,1080}, available_qualities: [...] }
+            const title = result?.title || "YouTube Video";
+            const creator = result?.creator;
+            const thumbnail = result?.thumbnail;
+            const audioUrl = result?.audio;
+            const videos = result?.videos || {};
+            const PREFERRED_QUALITIES = ["360", "720", "1080"];
+            const availableQualities = PREFERRED_QUALITIES.filter(q => videos[q]);
+
+            if (!Object.keys(videos).length && !audioUrl) {
+                await react("❌");
+                return reply("No downloadable formats found for this video.");
+            }
+
+            const dateNow = Date.now();
+            const buttons = availableQualities.map(quality => ({
+                id: `yt_${quality}_${dateNow}`,
+                text: `🎬 ${quality}p`,
+            }));
+            if (audioUrl) buttons.push({ id: `yt_mp3_${dateNow}`, text: "🎧 MP3 Audio" });
+
+            await sendButtons(Malvin, from, {
+                title: `${botName} YOUTUBE DOWNLOADER`,
+                text: `*${title}*${creator ? `\n👤 ${creator}` : ""}\n\n*Select quality:*`,
+                footer: botFooter,
+                image: { url: thumbnail || "https://via.placeholder.com/400" },
+                buttons: buttons,
+            });
+
+            const handleResponse = async (event) => {
+                const messageData = event.messages[0];
+                if (!messageData.message) return;
+
+                const selectedButtonId = extractButtonId(messageData.message);
+                if (!selectedButtonId) return;
+                if (!selectedButtonId.includes(`_${dateNow}`)) return;
+
+                const isFromSameChat = messageData.key?.remoteJid === from;
+                if (!isFromSameChat) return;
+
+                await react("⬇️");
+
+                try {
+                    if (selectedButtonId.startsWith("yt_mp3")) {
+                        const audioBuffer = await mxdBuffer(audioUrl);
+                        const fileSize = audioBuffer.length;
+
+                        if (fileSize > MAX_MEDIA_SIZE) {
+                            await Malvin.sendMessage(
+                                from,
+                                {
+                                    document: audioBuffer,
+                                    fileName: `${title.replace(/[^\w\s.-]/gi, "")}.mp3`,
+                                    mimetype: "audio/mpeg",
+                                },
+                                { quoted: messageData },
+                            );
+                        } else {
+                            await Malvin.sendMessage(
+                                from,
+                                { audio: audioBuffer, mimetype: "audio/mpeg" },
+                                { quoted: messageData },
+                            );
+                        }
+                    } else {
+                        const parts = selectedButtonId.split("_");
+                        const quality = parts[1];
+                        const videoUrl = videos[quality];
+
+                        if (!videoUrl) {
+                            await react("❌");
+                            return reply("Selected quality not available.", messageData);
+                        }
+
+                        const fileSize = await getFileSize(videoUrl);
+                        const sendAsDoc = fileSize > MAX_MEDIA_SIZE;
+
+                        if (sendAsDoc) {
+                            await Malvin.sendMessage(
+                                from,
+                                {
+                                    document: { url: videoUrl },
+                                    fileName: `${title.replace(/[^\w\s.-]/gi, "")}_${quality}p.mp4`,
+                                    mimetype: "video/mp4",
+                                    caption: `*${title}*`,
+                                },
+                                { quoted: messageData },
+                            );
+                        } else {
+                            await Malvin.sendMessage(
+                                from,
+                                { video: { url: videoUrl }, mimetype: "video/mp4", caption: `*${title}*` },
+                                { quoted: messageData },
+                            );
+                        }
+                    }
+
+                    await react("✅");
+                } catch (error) {
+                    console.error("YouTube download error:", error);
+                    await react("❌");
+                    await reply("Failed to download. Please try again.", messageData);
+                }
+            };
+
+            Malvin.ev.on("messages.upsert", handleResponse);
+            setTimeout(
+                () => Malvin.ev.off("messages.upsert", handleResponse),
+                300000,
+            );
+
+        } catch (error) {
+            console.error("YouTube API error:", error.message);
+            await react("❌");
+            return reply(`An error occurred: ${error.message}`);
+        }
+    },
+);
 cobaltCommand({ pattern: "twitter2", aliases: ["xdl", "xdownloader", "x"], emoji: "🐦", site: "Twitter/X", domains: ["twitter.com", "x.com"] });
 cobaltCommand({ pattern: "threads", aliases: ["threadsdl"], emoji: "🧵", site: "Threads", domains: ["threads.com", "threads.net"] });
 cobaltCommand({ pattern: "pinterest", aliases: ["pin", "pinterestdl"], emoji: "📌", site: "Pinterest", domains: ["pinterest."] });
@@ -379,7 +548,6 @@ cobaltCommand({ pattern: "douyin", aliases: ["douyindl", "dy"], emoji: "🎶", s
 cobaltCommand({ pattern: "snack", aliases: ["snackdl", "snackvideo"], emoji: "🍿", site: "SnackVideo", domains: ["snackvideo.", "sck.io"] });
 cobaltCommand({ pattern: "lahelu", aliases: ["laheludl"], emoji: "😂", site: "Lahelu", domains: ["lahelu.com"] });
 
-// ==================== SPOTIFY (oEmbed + YouTube fallback, no key) ====================
 mxd(
     {
         pattern: "spotify",
@@ -389,44 +557,183 @@ mxd(
         description: "Download Spotify tracks by URL or song name",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react, botName, botFooter, mxdBuffer, formatAudio } = conText;
+        const { q, mek, reply, react, botName, botFooter, mxdBuffer, formatAudio, MalvinTechApi, MalvinApiKey } = conText;
+
         if (!q) {
             await react("❌");
             return reply("Please provide a Spotify URL or song name\n\n*Examples:*\n.spotify https://open.spotify.com/track/...\n.spotify The Spectre Alan Walker");
         }
+
+        const truncate = (str, len) => str && str.length > len ? str.substring(0, len - 2) + ".." : str;
+
+        const downloadAndSend = async (trackUrl, quotedMsg, format = "audio") => {
+            try {
+                // Endpoint renamed: /download/spotify -> /download/spotidown.
+                // Track shape: { type:"track", title, artist, album, download_url, cover, ... }
+                const apiUrl = `${MalvinTechApi}/download/spotidown?apikey=${MalvinApiKey}&url=${encodeURIComponent(trackUrl)}`;
+                const { data } = await axios.get(apiUrl, { timeout: 30000, validateStatus: () => true });
+
+                if (data?.status === false || !data?.data?.download_url) {
+                    const { rawMessage } = classifyApiError(200, data);
+                    throw new Error(data?.data?.type && data.data.type !== "track"
+                        ? "This is a playlist/album URL — pick a track first, not the whole list."
+                        : rawMessage);
+                }
+
+                const { title, download_url } = data.data;
+                const audioBuffer = await mxdBuffer(download_url);
+                
+                if (!isValidBuffer(audioBuffer)) {
+                    throw new Error("Invalid audio buffer");
+                }
+                
+                const formattedAudio = await formatAudio(audioBuffer);
+
+                if (format === "doc") {
+                    await Malvin.sendMessage(from, {
+                        document: formattedAudio,
+                        fileName: `${(title || "spotify_track").replace(/[^\w\s.-]/gi, "")}.mp3`,
+                        mimetype: "audio/mpeg",
+                        caption: `🎧 ${title || "Spotify Track"}`,
+                    }, { quoted: quotedMsg });
+                } else {
+                    await Malvin.sendMessage(from, {
+                        audio: formattedAudio,
+                        mimetype: "audio/mpeg",
+                    }, { quoted: quotedMsg });
+                }
+                await react("✅");
+            } catch (error) {
+                console.error("Download error:", error.message);
+                await react("❌");
+                return reply(`Failed to fetch track: ${error.message}`, quotedMsg);
+            }
+        };
+
         try {
-            await react("🔍");
-            let searchTerm = q.trim();
             if (q.includes("spotify.com")) {
-                // Free oEmbed resolves the track title without any key.
-                try {
-                    const { data } = await AX.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(q.trim().split(/\s+/)[0])}`);
-                    if (data?.title) searchTerm = data.title;
-                } catch (_) {}
+                const dateNow = Date.now();
+                const buttonId = `spotify_${dateNow}`;
+                
+                await sendButtons(Malvin, from, {
+                    title: `${botName} SPOTIFY`,
+                    text: `*Download this track:*\n\nSelect format:`,
+                    footer: botFooter,
+                    buttons: [
+                        { id: `audio_${buttonId}`, text: "Audio 🎧" },
+                        { id: `doc_${buttonId}`, text: "Document 📄" },
+                    ],
+                });
+
+                const handleResponse = async (event) => {
+                    const messageData = event.messages[0];
+                    if (!messageData.message) return;
+
+                    const selectedButtonId = extractButtonId(messageData.message);
+                    if (!selectedButtonId || !selectedButtonId.includes(dateNow.toString())) return;
+                    if (messageData.key?.remoteJid !== from) return;
+
+                    await react("⬇️");
+                    const format = selectedButtonId.startsWith('audio_') ? "audio" : "doc";
+                    await downloadAndSend(q, messageData, format);
+                    Malvin.ev.off("messages.upsert", handleResponse);
+                };
+
+                Malvin.ev.on("messages.upsert", handleResponse);
+                setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
+                return;
             }
-            const yts = require("yt-search");
-            const r = await yts(searchTerm);
-            const v = r?.videos?.[0];
-            if (!v?.url) {
+
+            // NOTE: /search/spotifysearch wasn't included in the API source
+            // I was given, so this response shape (data.success/data.results)
+            // is unverified against the migrated API — confirm if this breaks.
+            const searchUrl = `${MalvinTechApi}/search/spotifysearch?apikey=${MalvinApiKey}&query=${encodeURIComponent(q)}`;
+            const searchResponse = await axios.get(searchUrl, { timeout: 30000 });
+            const data = searchResponse.data;
+
+            if (!data?.success || !data?.results?.length) {
                 await react("❌");
-                return reply("No tracks found. Try a different song name.");
+                return reply("No tracks found. Try a direct Spotify URL.");
             }
-            const { url: fileUrl } = { url: await ytAudioUrl(v.url) };
-            const audioBuffer = await dlMedia(fileUrl);
-            if (!isValidBuffer(audioBuffer)) {
-                await react("❌");
-                return reply("Failed to download audio.");
-            }
-            const formattedAudio = await formatAudio(audioBuffer);
-            await Malvin.sendMessage(from, {
-                audio: formattedAudio, mimetype: "audio/mpeg",
-            }, { quoted: conText.mek });
-            await Malvin.sendMessage(from, { text: `🎧 *${v.title}*\n⏱️ ${v.timestamp}\n\n> *${botFooter}*` }, { quoted: conText.mek });
-            await react("✅");
+
+            const tracks = data.results.slice(0, 3);
+            const dateNow = Date.now();
+            const buttons = tracks.map((track, index) => {
+                const title = track.title || track.name || "Unknown Track";
+                const artist = track.artist || "";
+                const displayName = artist ? `${title} - ${artist}` : title;
+                return { id: `sp_${index}_${dateNow}`, text: truncate(displayName, 20) };
+            });
+
+            const trackList = tracks.map((track, i) => {
+                const title = track.title || track.name || "Unknown";
+                const artist = track.artist || "Unknown";
+                return `${i + 1}. ${title} - ${artist}`;
+            }).join("\n");
+
+            const thumbnailUrl = tracks[0]?.thumbnail || tracks[0]?.image || '';
+
+            await sendButtons(Malvin, from, {
+                title: `${botName} SPOTIFY`,
+                text: `*Search Results:*\n\n${trackList}\n\n*Select a track:*`,
+                footer: botFooter,
+                image: { url: thumbnailUrl },
+                buttons: buttons,
+            });
+
+            const handleResponse = async (event) => {
+                const messageData = event.messages[0];
+                if (!messageData.message) return;
+
+                const selectedButtonId = extractButtonId(messageData.message);
+                if (!selectedButtonId || !selectedButtonId.includes(`_${dateNow}`)) return;
+                if (messageData.key?.remoteJid !== from) return;
+
+                await react("⬇️");
+                const index = parseInt(selectedButtonId.split("_")[1]);
+                const selectedTrack = tracks[index];
+                const trackUrl = selectedTrack?.url || selectedTrack?.link || selectedTrack?.spotify_url;
+
+                if (!trackUrl) {
+                    await react("❌");
+                    return reply("Track URL not available.", messageData);
+                }
+                
+                const formatButtonId = `spotifyfmt_${dateNow}`;
+                await sendButtons(Malvin, from, {
+                    title: `${botName} SPOTIFY`,
+                    text: `*${selectedTrack.title || "Track"}*\n\nSelect download format:`,
+                    footer: botFooter,
+                    buttons: [
+                        { id: `audio_${formatButtonId}`, text: "Audio 🎧" },
+                        { id: `doc_${formatButtonId}`, text: "Document 📄" },
+                    ],
+                });
+
+                const formatHandler = async (formatEvent) => {
+                    const formatData = formatEvent.messages[0];
+                    if (!formatData.message) return;
+
+                    const formatId = extractButtonId(formatData.message);
+                    if (!formatId || !formatId.includes(formatButtonId)) return;
+                    if (formatData.key?.remoteJid !== from) return;
+
+                    const formatType = formatId.startsWith('audio_') ? "audio" : "doc";
+                    await downloadAndSend(trackUrl, formatData, formatType);
+                    Malvin.ev.off("messages.upsert", formatHandler);
+                };
+
+                Malvin.ev.on("messages.upsert", formatHandler);
+                setTimeout(() => Malvin.ev.off("messages.upsert", formatHandler), 300000);
+                Malvin.ev.off("messages.upsert", handleResponse);
+            };
+
+            Malvin.ev.on("messages.upsert", handleResponse);
+            setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
         } catch (error) {
-            console.error("Spotify error:", error.message);
+            console.error("Spotify error:", error);
             await react("❌");
-            return reply(`An error occurred: ${error.message}`);
+            return reply("An error occurred. Please try again.");
         }
     }
 );

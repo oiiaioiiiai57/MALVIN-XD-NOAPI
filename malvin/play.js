@@ -1,4 +1,4 @@
-const { mxd } = require("../king");
+﻿const { mxd } = require("../king");
 const axios = require("axios");
 
 function extractButtonId(msg) {
@@ -45,101 +45,37 @@ function describeError(error) {
     return String(error);
 }
 
-// ==================== NO-KEY YOUTUBE (yt-search + play-dl direct formats) ====================
-// No API key, no third-party service: yt-search finds the video, play-dl's
-// video_info exposes YouTube's direct media URLs (usually itag 18/22).
-// Throws with a readable message on failure.
-async function searchYoutube(query) {
-    const yts = require("yt-search");
-    const r = await yts(query);
-    const v = r?.videos?.[0];
-    if (!v?.url) throw new Error("No video found for your query.");
-    return { title: v.title, duration: v.timestamp || "N/A", thumbnail: v.thumbnail, videoId: v.videoId, url: v.url };
-}
-
-function withBypass(u) {
-    try {
-        const uu = new URL(u);
-        if (!uu.searchParams.has("ratebypass")) uu.searchParams.set("ratebypass", "yes");
-        return uu.toString();
-    } catch { return u; }
-}
-
-// Optional YT_COOKIE env (paste of your logged-in YouTube request cookies).
-// Lets play-dl pass YouTube's "Sign in to confirm you're not a bot" check
-// on datacenter IPs. Never commit the value — set it in Railway Variables.
-let ytCookieApplied = false;
-async function applyYtCookie(play) {
-    if (ytCookieApplied) return;
-    ytCookieApplied = true;
-    const cookie = process.env.YT_COOKIE;
-    if (!cookie) return;
-    try {
-        await play.setToken({ youtube: { cookie } });
-        console.log("[play-dl] YT_COOKIE applied.");
-    } catch (e) { console.error("[play-dl] YT_COOKIE failed:", e.message); }
-}
-
-async function ytDirectFormats(videoUrl) {
-    const play = require("play-dl");
-    await applyYtCookie(play);
-    const info = await play.video_info(videoUrl);
-    const formats = (info?.format || []).filter(f => f.url);
-    if (!formats.length) throw new Error("YouTube gave no playable stream (bot protection). Retry later.");
-    return formats;
-}
-
-function pickAudioUrl(formats) {
-    const audioOnly = formats.filter(f => /^audio\//.test(f.mimeType || ""));
-    audioOnly.sort((a, b) => (parseInt(b.audioBitrate) || 0) - (parseInt(a.audioBitrate) || 0));
-    const best = audioOnly[0] || formats.find(f => f.itag === 22) || formats.find(f => f.itag === 18) || formats[0];
-    return withBypass(best.url);
-}
-
-function pickVideoUrl(formats) {
-    const best = formats.find(f => f.itag === 22) || formats.find(f => f.itag === 18)
-        || formats.find(f => (f.mimeType || "").startsWith("video/mp4")) || formats[0];
-    return withBypass(best.url);
-}
-
-// Browser-like media downloader (googlevideo rejects bare requests with 403).
-// Accepts 2xx + 416, retries once without Range on 403/416.
-async function dlMedia(url) {
-    const headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.youtube.com/",
-        "Origin": "https://www.youtube.com",
-        "Range": "bytes=0-",
-    };
-    const attempt = (hdrs) => axios.get(url, {
-        responseType: "arraybuffer", timeout: 180000, maxRedirects: 5,
-        headers: hdrs, validateStatus: (s) => (s >= 200 && s < 300) || s === 416,
-    });
-    try {
-        const res = await attempt(headers);
-        return Buffer.from(res.data);
-    } catch (e) {
-        if (e?.response && [403, 416].includes(e.response.status)) {
-            const { Range, ...noRange } = headers;
-            const res2 = await attempt(noRange);
-            return Buffer.from(res2.data);
-        }
-        throw e;
-    }
-}
-
+// ==================== CLUTCH (search + download, single source) ====================
+// GET /download/clutchplay?query= — searches by name, returns a ready MP3
+// link plus metadata in one call.
 async function fetchFromClutchPlay(query, conText) {
-    const found = await searchYoutube(query);
-    const formats = await ytDirectFormats(found.url);
-    return { title: found.title, duration: found.duration, thumbnail: found.thumbnail, video_id: found.videoId, url: found.url, audio: pickAudioUrl(formats) };
+    const { MalvinTechApi, MalvinApiKey } = conText;
+    const res = await axios.get(`${MalvinTechApi}/download/clutchplay`, {
+        params: { apikey: MalvinApiKey, query },
+        timeout: 20000,
+        validateStatus: () => true,
+    });
+    if (res.status >= 400 || res.data?.status === false) {
+        const apiMessage = res.data?.error || res.data?.message;
+        throw new Error(apiMessage || `Search failed (HTTP ${res.status})`);
+    }
+    return res.data?.data;
 }
 
-// Resolves a specific YouTube URL to a direct video file.
+// GET /download/clutchyt?url=&quality= — resolves a specific YouTube URL at
+// a specific quality.
 async function fetchFromClutchYoutube(videoUrl, conText, quality = "720") {
-    const formats = await ytDirectFormats(videoUrl);
-    return { title: "YouTube Video", duration: "N/A", thumbnail: null, video_id: Date.now().toString(), url: videoUrl, video: pickVideoUrl(formats) };
+    const { MalvinTechApi, MalvinApiKey } = conText;
+    const res = await axios.get(`${MalvinTechApi}/download/clutchyt`, {
+        params: { apikey: MalvinApiKey, url: videoUrl, quality },
+        timeout: 30000,
+        validateStatus: () => true,
+    });
+    if (res.status >= 400 || res.data?.status === false) {
+        const apiMessage = res.data?.error || res.data?.message;
+        throw new Error(apiMessage || `Video fetch failed (HTTP ${res.status})`);
+    }
+    return res.data?.data;
 }
 
 // ==================== SENDAUDIO ====================
@@ -260,7 +196,7 @@ mxd(
       const videoId = result.video_id || Date.now().toString();
       const watchUrl = result.url;
 
-      let bufferRes = await dlMedia(result.audio);
+      let bufferRes = await mxdBuffer(result.audio);
 
       if (!isValidBuffer(bufferRes)) {
         await react("❌");
@@ -406,7 +342,7 @@ mxd(
       const thumbnail = result.thumbnail;
       const videoId = result.video_id || Date.now().toString();
 
-      let buffer = await dlMedia(result.video);
+      let buffer = await mxdBuffer(result.video);
 
       if (!isValidBuffer(buffer)) {
         await react("❌");
