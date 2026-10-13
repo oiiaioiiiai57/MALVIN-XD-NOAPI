@@ -1672,7 +1672,7 @@ mxd(
     description: "Get WhatsApp Channel/Newsletter Info",
   },
   async (from, Malvin, conText) => {
-    const { q, reply, react, botFooter, botPrefix } = conText;
+    const { q, reply, react, botFooter, botPrefix, MalvinTechApi, MalvinApiKey } = conText;
 
     const input = q?.trim();
     if (!input) {

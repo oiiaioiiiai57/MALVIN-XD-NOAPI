@@ -7,7 +7,7 @@ const { sendButtons } = require("malvin-btns");
 
 // Helper function for single text effects
 async function sendEphotoEffect(from, Malvin, conText, effectName, endpoint, emoji, effectTitle, paramName = "text") {
-    const { q, reply, react, botFooter, mek } = conText;
+    const { q, reply, react, MalvinTechApi, MalvinApiKey, botFooter, mek } = conText;
 
     if (!q) {
         await react("❌");
@@ -16,15 +16,16 @@ async function sendEphotoEffect(from, Malvin, conText, effectName, endpoint, emo
 
     try {
         await react("🎨");
-        // No-key fallback: local styled text card via sharp SVG.
-        const sharp = require("sharp");
-        const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        const hue = [...effectName].reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
-        const svg = `<svg width="1000" height="500" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},80%,20%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360},80%,35%)"/></linearGradient></defs><rect width="1000" height="500" fill="url(#g)"/><text x="500" y="250" font-family="Arial,sans-serif" font-size="72" font-weight="bold" fill="white" text-anchor="middle">${esc(q.slice(0, 40))}</text><text x="500" y="330" font-family="Arial,sans-serif" font-size="36" fill="hsl(${hue},90%,75%)" text-anchor="middle">${esc(effectTitle)}</text></svg>`;
-        const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+        const apiUrl = `${MalvinTechApi}/ephoto360/${endpoint}?apikey=${MalvinApiKey}&${paramName}=${encodeURIComponent(q)}`;
+        const { data } = await axios.get(apiUrl, { timeout: 30000, validateStatus: () => true });
+
+        if (!data?.status || !data?.data?.image_url) {
+            await react("❌");
+            return reply(`Failed to generate ${effectTitle} effect. Please try again.`);
+        }
 
         await Malvin.sendMessage(from, {
-            image: buf,
+            image: { url: data.data.image_url },
             caption: `${emoji} *${effectTitle}*\n📝 ${q}\n\n> *${botFooter}*`
         }, { quoted: mek });
 
@@ -45,7 +46,7 @@ mxd({
     aliases: ["ephoto360", "textfx", "texteffect"],
     description: "Generate text effects from Ephoto360",
 }, async (from, Malvin, conText) => {
-    const { reply, react, botName, botFooter, newsletterUrl } = conText;
+    const { reply, react, botName, botFooter, MalvinTechApi } = conText;
 
     await react("🖼️");
     
@@ -93,8 +94,8 @@ mxd({
             {
                 name: "cta_url",
                 buttonParamsJson: JSON.stringify({
-                    display_text: "📢 Channel",
-                    url: newsletterUrl,
+                    display_text: "🌐 API Site",
+                    url: MalvinTechApi,
                 }),
             },
         ],

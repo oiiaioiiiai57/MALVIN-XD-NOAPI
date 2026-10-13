@@ -1,17 +1,8 @@
-// malvin/sports.js — NO-KEY version (no MALVIN_API_KEY needed)
-// Backends: TheSportsDB free tier (players, teams, tables, fixtures,
-// livescore, h2h search) + BBC Sport RSS (news). All free, no key.
-// Honest limits: topscorers show top attacking TEAMS (no free player
-// scorers feed exists without a key); odds show fixtures + note.
-
 const { mxd } = require("../king");
+const { mrxd } = require('../king/mrxd');
 const axios = require("axios");
-const cheerio = require("cheerio");
 const { sendButtons } = require("malvin-btns");
 const { fancy } = require("../king/fancyFont");
-
-const AX = axios.create({ timeout: 15000, validateStatus: () => true });
-const DB = "https://www.thesportsdb.com/api/v1/json/3";
 
 function extractButtonId(msg) {
     if (!msg) return null;
@@ -31,25 +22,9 @@ function extractButtonId(msg) {
     return null;
 }
 
-// Current season string for lookuptable (seasons start in August).
-function currentSeason() {
-    const now = new Date();
-    const y = now.getUTCFullYear();
-    return now.getUTCMonth() >= 7 ? `${y}-${y + 1}` : `${y - 1}-${y}`;
-}
+// ==================== SEARCH ENDPOINTS ====================
 
-const LEAGUES = {
-    epl:        { id: "4328", name: "English Premier League" },
-    bundesliga: { id: "4331", name: "German Bundesliga" },
-    laliga:     { id: "4335", name: "Spanish La Liga" },
-    seriea:     { id: "4332", name: "Italian Serie A" },
-    ligue1:     { id: "4334", name: "French Ligue 1" },
-    ucl:        { id: "4480", name: "UEFA Champions League" },
-    euros:      { id: "4553", name: "UEFA European Championship" },
-    fifa:       { id: "4429", name: "FIFA World Cup" },
-};
-
-// ==================== PLAYER SEARCH ====================
+// 1. Player Search
 mxd(
     {
         pattern: "player",
@@ -59,363 +34,1548 @@ mxd(
         description: "Search for football players",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react, botName, botFooter } = conText;
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         if (!q) {
             await react("❌");
             return reply("Please provide a player name\n\n*Example:* .player Messi");
         }
+
         try {
             await react("🔍");
-            const { data } = await AX.get(`${DB}/searchplayers.php?p=${encodeURIComponent(q.trim())}`);
-            const players = (data?.player || []).slice(0, 5);
-            if (!players.length) {
+            const apiUrl = `${MalvinTechApi}/sports/player/search?apikey=${MalvinApiKey}&q=${encodeURIComponent(q)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.players?.length) {
                 await react("❌");
                 return reply("No players found.");
             }
-            const p = players[0];
-            const dateNow = Date.now();
-            const message = `⚽ *PLAYER SEARCH*\n🔍 ${fancy("search", "smallcaps")}: ${q}\n✅ ${fancy("found", "smallcaps")}: ${players.length}\n\n👤 *${p.strPlayer}*\n🏟️ Team: ${p.strTeam || "N/A"}\n🌍 Nationality: ${p.strNationality || "N/A"}\n📅 Born: ${p.dateBorn || "N/A"}\n📏 Height: ${p.strHeight || "N/A"} | ⚖️ Weight: ${p.strWeight || "N/A"}\n⚽ Position: ${p.strPosition || "N/A"}\n📝 ${(p.strDescriptionEN || "").slice(0, 300)}`;
-            await sendButtons(Malvin, from, {
-                title: botName, text: message, footer: `> *${botFooter}*`,
-                ...(p.strThumb ? { image: { url: p.strThumb } } : {}),
-                buttons: [
-                    ...(players.length > 1 ? players.slice(1).map((pl, i) => ({ id: `plr_${i}_${dateNow}`, text: `👤 ${(pl.strPlayer || "?").slice(0, 18)}` })) : []),
-                    { name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "📢 Channel", url: conText.newsletterUrl }) },
-                ],
-            }, { quoted: conText.mek });
 
-            if (players.length > 1) {
-                const handleResponse = async (event) => {
-                    const messageData = event.messages[0];
-                    if (!messageData.message) return;
-                    const bid = extractButtonId(messageData.message);
-                    if (!bid || !bid.includes(dateNow.toString())) return;
-                    if (messageData.key?.remoteJid !== from) return;
-                    const idx = parseInt((bid.split("_")[1] || "0")) + 1;
-                    const sel = players[idx];
-                    if (sel) await reply(`👤 *${sel.strPlayer}*\n🏟️ ${sel.strTeam || "N/A"} | ⚽ ${sel.strPosition || "N/A"}\n🌍 ${sel.strNationality || "N/A"}`, messageData);
-                    Malvin.ev.off("messages.upsert", handleResponse);
-                };
-                Malvin.ev.on("messages.upsert", handleResponse);
-                setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 120000);
-            }
+            const players = data.data.players.slice(0, 5);
+            const dateNow = Date.now();
+            
+            let message = `╭══〘〘 *PLAYER SEARCH* 〙〙═⊷
+│↠⚽ ${fancy("search", "smallcaps")}: ${q}
+│↠📊 ${fancy("found", "smallcaps")}: ${data.data.count}
+╰═════════════════⊷
+
+${players.map((p, i) => `${i + 1}. *${p.name}*\n   📍 ${p.position || "N/A"} | 🌍 ${p.nationality || "N/A"}\n   ⚽ ${p.team || "N/A"}`).join("\n\n")}`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `player_copy_${dateNow}`, text: "📋 Copy First Player" },
+                ],
+            }, { quoted: mrxd });
+
+            const handleResponse = async (event) => {
+                const messageData = event.messages[0];
+                if (!messageData.message) return;
+
+                const selectedButtonId = extractButtonId(messageData.message);
+                if (!selectedButtonId || !selectedButtonId.includes(dateNow.toString())) return;
+                if (messageData.key?.remoteJid !== from) return;
+
+                if (selectedButtonId.startsWith("player_copy")) {
+                    await react("📋");
+                    await reply(`📋 *Player copied:*\n\`${players[0]?.name}\``, messageData);
+                }
+                
+                Malvin.ev.off("messages.upsert", handleResponse);
+            };
+
+            Malvin.ev.on("messages.upsert", handleResponse);
+            setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
             await react("✅");
+
         } catch (error) {
-            console.error("player error:", error.message);
+            console.error("Player search error:", error);
             await react("❌");
             reply("Failed to search players. Please try again.");
         }
     }
 );
 
-// ==================== TEAM SEARCH ====================
+// 2. Team Search
 mxd(
     {
         pattern: "team",
         category: "sports",
-        react: "🏟️",
-        aliases: ["footballteam", "soccerteam"],
-        description: "Search for football teams",
+        react: "🏆",
+        aliases: ["footballteam", "soccerteam", "club"],
+        description: "Search for football teams/clubs",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react, botName, botFooter } = conText;
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         if (!q) {
             await react("❌");
             return reply("Please provide a team name\n\n*Example:* .team Arsenal");
         }
+
         try {
             await react("🔍");
-            const { data } = await AX.get(`${DB}/searchteams.php?t=${encodeURIComponent(q.trim())}`);
-            const teams = (data?.teams || []).slice(0, 5);
-            if (!teams.length) {
+            const apiUrl = `${MalvinTechApi}/sports/team/search?apikey=${MalvinApiKey}&q=${encodeURIComponent(q)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.teams?.length) {
                 await react("❌");
                 return reply("No teams found.");
             }
-            const t = teams[0];
-            const message = `🏟️ *TEAM SEARCH*\n\n🏟️ *${t.strTeam}*\n📌 Short: ${t.strTeamShort || "N/A"}\n🏆 League: ${t.strLeague || "N/A"}\n🏟️ Stadium: ${t.strStadium || "N/A"} (${t.intStadiumCapacity || "?"} seats)\n📍 Location: ${t.strStadiumLocation || "N/A"}\n🌍 Country: ${t.strCountry || "N/A"}\n📅 Formed: ${t.intFormedYear || "N/A"}\n📝 ${(t.strDescriptionEN || "").slice(0, 300)}`;
+
+            const teams = data.data.teams.slice(0, 5);
+            
+            let message = `╭══〘〘 *TEAM SEARCH* 〙〙═⊷
+│↠🏆 ${fancy("search", "smallcaps")}: ${q}
+│↠📊 ${fancy("found", "smallcaps")}: ${data.data.count}
+╰═════════════════⊷
+
+${teams.map((t, i) => `${i + 1}. *${t.name}*\n   📛 ${t.shortName || "N/A"} | 🏟️ ${t.venue || "N/A"}`).join("\n\n")}`;
+
             await sendButtons(Malvin, from, {
-                title: botName, text: message, footer: `> *${botFooter}*`,
-                ...(t.strTeamBadge ? { image: { url: t.strTeamBadge } } : {}),
-                buttons: [{ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "📢 Channel", url: conText.newsletterUrl }) }],
-            }, { quoted: conText.mek });
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `team_copy_${Date.now()}`, text: "📋 Copy First Team" },
+                ],
+            }, { quoted: mrxd });
+
             await react("✅");
+
         } catch (error) {
+            console.error("Team search error:", error);
             await react("❌");
             reply("Failed to search teams. Please try again.");
         }
     }
 );
 
-// ==================== VENUE ====================
+// 3. Venue Search
 mxd(
     {
         pattern: "venue",
         category: "sports",
         react: "🏟️",
         aliases: ["stadium", "ground"],
-        description: "Get stadium/venue info for a team",
+        description: "Search for football stadiums/venues",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react } = conText;
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         if (!q) {
             await react("❌");
-            return reply("Please provide a team name\n\n*Example:* .venue Arsenal");
+            return reply("Please provide a team or venue name\n\n*Example:* .venue Emirates");
         }
+
         try {
             await react("🔍");
-            const { data } = await AX.get(`${DB}/searchteams.php?t=${encodeURIComponent(q.trim())}`);
-            const t = data?.teams?.[0];
-            if (!t) {
+            const apiUrl = `${MalvinTechApi}/sports/venue/search?apikey=${MalvinApiKey}&q=${encodeURIComponent(q)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.venues?.length) {
                 await react("❌");
-                return reply("Team not found.");
+                return reply("No venues found.");
             }
-            await reply(`🏟️ *${t.strStadium || t.strTeam}*\n\n🏟️ Team: ${t.strTeam}\n📍 Location: ${t.strStadiumLocation || "N/A"}\n💺 Capacity: ${t.intStadiumCapacity || "N/A"}\n📝 ${(t.strStadiumDescription || "").slice(0, 400) || "No description."}`);
+
+            const venues = data.data.venues.slice(0, 5);
+            
+            let message = `╭══〘〘 *VENUE SEARCH* 〙〙═⊷
+│↠🏟️ ${fancy("search", "smallcaps")}: ${q}
+│↠📊 ${fancy("found", "smallcaps")}: ${data.data.count}
+╰═════════════════⊷
+
+${venues.map((v, i) => `${i + 1}. *${v.team}*\n   🏟️ ${v.venue}\n   📍 ${v.address || "N/A"}`).join("\n\n")}`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    {
+                        name: "cta_url",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "🗺️ View on Maps",
+                            url: `https://maps.google.com/?q=${encodeURIComponent(venues[0]?.venue || "")}`,
+                        }),
+                    },
+                ],
+            }, { quoted: mrxd });
+
             await react("✅");
+
         } catch (error) {
+            console.error("Venue search error:", error);
             await react("❌");
-            reply("Failed to fetch venue. Please try again.");
+            reply("Failed to search venues. Please try again.");
         }
     }
 );
 
-// ==================== H2H (event search, no key) ====================
+// 4. Head-to-Head (Game Events)
 mxd(
     {
         pattern: "h2h",
         category: "sports",
         react: "⚔️",
-        aliases: ["headtohead", "versus"],
-        description: "Head-to-head results between two teams",
+        aliases: ["headtohead", "matches", "fixture"],
+        description: "Get head-to-head matches between two teams",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react } = conText;
-        if (!q || !q.includes("|")) {
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
+        if (!q) {
             await react("❌");
-            return reply("Usage: .h2h TeamA | TeamB\n\n*Example:* .h2h Arsenal | Chelsea");
+            return reply("Please provide two teams\n\n*Example:* .h2h Arsenal vs Chelsea");
         }
-        const [a, b] = q.split("|").map(s => s.trim());
+
+        if (!q.toLowerCase().includes("vs") && !q.toLowerCase().includes(" - ")) {
+            await react("❌");
+            return reply("Use format: Team1 vs Team2\n\n*Example:* .h2h Manchester United vs Liverpool");
+        }
+
         try {
             await react("🔍");
-            const { data } = await AX.get(`${DB}/searchevents.php?e=${encodeURIComponent(a + "_" + b)}`);
-            const events = (data?.event || []).slice(0, 5);
-            if (!events.length) {
+            const apiUrl = `${MalvinTechApi}/sports/events?apikey=${MalvinApiKey}&q=${encodeURIComponent(q)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data) {
                 await react("❌");
-                return reply("No head-to-head matches found.");
+                return reply("No matches found between these teams.");
             }
-            const list = events.map(e => `📅 ${e.dateEvent} — *${e.strEvent}*\n   ${e.intHomeScore ?? "?"} - ${e.intAwayScore ?? "?"} (${e.strLeague || ""})`).join("\n\n");
-            await reply(`⚔️ *H2H: ${a} vs ${b}*\n\n${list}`);
+
+            const r = data.data;
+            const matches = r.matches || [];
+            const dateNow = Date.now();
+            
+            if (!matches.length) {
+                await reply(`⚔️ *${r.teams?.team1} vs ${r.teams?.team2}*\n\nNo previous matches found.`);
+            } else {
+                const text = matches.slice(0, 5).map((m, i) => 
+                    `${i + 1}. 📅 ${m.date}\n   🏆 ${m.competition}\n   ${m.homeTeam} ${m.score} ${m.awayTeam}\n   🏆 ${m.winner}`
+                ).join("\n\n");
+                
+                let message = `╭══〘〘 *HEAD-TO-HEAD* 〙〙═⊷
+│↠⚔️ ${r.teams?.team1} vs ${r.teams?.team2}
+│↠📊 ${fancy("total", "smallcaps")}: ${r.total} ${fancy("matches", "smallcaps")}
+╰═════════════════⊷
+
+${text}`;
+
+                await sendButtons(Malvin, from, {
+                    title: botName,
+                    text: message,
+                    footer: `> *${botFooter}*`,
+                    buttons: [
+                        { id: `h2h_share_${dateNow}`, text: "📤 Share" },
+                    ],
+                }, { quoted: mrxd });
+            }
+            
             await react("✅");
+
         } catch (error) {
+            console.error("H2H error:", error);
             await react("❌");
-            reply("Failed to fetch H2H. Please try again.");
+            reply("Failed to fetch matches. Please try again.");
         }
     }
 );
 
-// ==================== LIVESCORE ====================
+// ==================== LIVESCORE ENDPOINTS ====================
+
+// 5. LiveScore Updates
 mxd(
     {
         pattern: "livescore",
         category: "sports",
         react: "🔴",
-        aliases: ["live", "scores"],
-        description: "Live soccer scores",
+        aliases: ["livescores", "livefootball", "live"],
+        description: "Get live football scores",
     },
     async (from, Malvin, conText) => {
-        const { reply, react } = conText;
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         try {
-            await react("🔍");
-            const { data } = await AX.get(`${DB}/livescore.php?s=Soccer`);
-            const games = (data?.events || []).slice(0, 15);
-            if (!games.length) {
-                await react("❌");
-                return reply("No live matches right now.");
+            await react("🔴");
+            const apiUrl = `${MalvinTechApi}/sports/livescore?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("🔴 No live matches at the moment.");
+                await react("✅");
+                return;
             }
-            const list = games.map(g => `🔴 *${g.strEvent}*\n   ${g.intHomeScore ?? "?"} - ${g.intAwayScore ?? "?"} (${g.strProgress || "LIVE"})`).join("\n\n");
-            await reply(`🔴 *LIVE SCORES*\n\n${list}`);
+
+            const matches = data.data.matches;
+            const dateNow = Date.now();
+            const text = matches.slice(0, 10).map((m, i) => 
+                `${i + 1}. 🏆 ${m.competition}\n   ${m.homeTeam} ${m.score} ${m.awayTeam}\n   ⏱️ ${m.minute}`
+            ).join("\n\n");
+
+            let message = `╭══〘〘 *LIVE SCORES* 〙〙═⊷
+│↠🔴 ${fancy("live matches", "smallcaps")}: ${data.data.total}
+╰═════════════════⊷
+
+${text}`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `live_refresh_${dateNow}`, text: "🔄 Refresh" },
+                ],
+            }, { quoted: mrxd });
+
+            const handleResponse = async (event) => {
+                const messageData = event.messages[0];
+                if (!messageData.message) return;
+
+                const selectedButtonId = extractButtonId(messageData.message);
+                if (!selectedButtonId || !selectedButtonId.includes(dateNow.toString())) return;
+                if (messageData.key?.remoteJid !== from) return;
+
+                if (selectedButtonId.startsWith("live_refresh")) {
+                    await react("🔄");
+                    const newData = await axios.get(apiUrl, { timeout: 15000 });
+                    if (newData.data?.data?.matches?.length) {
+                        const newText = newData.data.data.matches.slice(0, 10).map((m, i) => 
+                            `${i + 1}. 🏆 ${m.competition}\n   ${m.homeTeam} ${m.score} ${m.awayTeam}\n   ⏱️ ${m.minute}`
+                        ).join("\n\n");
+                        await reply(`🔴 *LIVE SCORES (REFRESHED)*\n\n${newText}`, messageData);
+                    }
+                }
+                
+                Malvin.ev.off("messages.upsert", handleResponse);
+            };
+
+            Malvin.ev.on("messages.upsert", handleResponse);
+            setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
             await react("✅");
+
         } catch (error) {
+            console.error("Livescore error:", error);
             await react("❌");
-            reply("Failed to fetch livescores. Please try again.");
+            reply("Failed to fetch live scores. Please try again.");
         }
     }
 );
 
-// ==================== HIGHLIGHTS (events with video links) ====================
+// 6. LiveScore with Highlights
 mxd(
     {
         pattern: "livehighlights",
         category: "sports",
-        react: "🎬",
-        aliases: ["highlights", "hl"],
-        description: "Recent matches with highlight videos",
+        react: "🎥",
+        aliases: ["highlights", "livescorehd"],
+        description: "Get live scores with video highlights",
     },
     async (from, Malvin, conText) => {
-        const { reply, react } = conText;
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         try {
             await react("🔍");
-            const { data } = await AX.get(`${DB}/eventslastleague.php?id=4328`);
-            const withVideo = (data?.events || []).filter(e => e.strVideo).slice(0, 5);
-            if (!withVideo.length) {
-                await react("❌");
-                return reply("No highlight videos found right now.");
+            const apiUrl = `${MalvinTechApi}/sports/livescore/highlights?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("🎥 No live matches with highlights available.");
+                await react("✅");
+                return;
             }
-            const list = withVideo.map(e => `🎬 *${e.strEvent}* (${e.dateEvent})\n   ${e.intHomeScore ?? "?"} - ${e.intAwayScore ?? "?"}\n   ▶️ ${e.strVideo}`).join("\n\n");
-            await reply(`🎬 *HIGHLIGHTS (EPL)*\n\n${list}`);
+
+            const matches = data.data.matches;
+            const text = matches.map((m, i) => 
+                `${i + 1}. 🏆 ${m.competition}\n   ${m.homeTeam} ${m.score} ${m.awayTeam}\n   ⏱️ ${m.minute}\n   🎥 ${m.hasHighlights ? "✅ Available" : "⏳ Coming soon"}`
+            ).join("\n\n");
+
+            let message = `╭══〘〘 *LIVE SCORES + HIGHLIGHTS* 〙〙═⊷
+│↠🎥 ${fancy("live matches", "smallcaps")}: ${data.data.total}
+╰═════════════════⊷
+
+${text}`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `highlights_live_${Date.now()}`, text: "🔴 Live Scores" },
+                ],
+            }, { quoted: mrxd });
+
             await react("✅");
+
         } catch (error) {
+            console.error("Live highlights error:", error);
             await react("❌");
-            reply("Failed to fetch highlights. Please try again.");
+            reply("Failed to fetch live highlights. Please try again.");
         }
     }
 );
 
-// ==================== PER-LEAGUE: TABLE / TOPSCORERS / UPCOMING ====================
-for (const [key, lg] of Object.entries(LEAGUES)) {
-    // Table
-    mxd(
-        { pattern: `${key}table`, category: "sports", react: "📊", aliases: [`${key}standings`], description: `${lg.name} standings` },
-        async (from, Malvin, conText) => {
-            const { reply, react } = conText;
-            try {
-                await react("🔍");
-                const { data } = await AX.get(`${DB}/lookuptable.php?l=${lg.id}&s=${currentSeason()}`);
-                const rows = (data?.table || []).slice(0, 10);
-                if (!rows.length) {
-                    await react("❌");
-                    return reply("Table not available right now.");
-                }
-                const list = rows.map(r => `${r.intRank}. *${r.strTeam}* — ${r.intPlayed}P ${r.intWin}W ${r.intDraw}D ${r.intLoss}L (${r.intPoints} pts)`).join("\n");
-                await reply(`📊 *${lg.name} — TABLE*\n\n${list}`);
-                await react("✅");
-            } catch (error) {
-                await react("❌");
-                reply("Failed to fetch table. Please try again.");
-            }
-        }
-    );
-    // Top attacking teams (no free player-scorers feed exists without a key)
-    mxd(
-        { pattern: `${key}topscorers`, category: "sports", react: "👟", aliases: [`${key}scorers`], description: `${lg.name} top attacking teams` },
-        async (from, Malvin, conText) => {
-            const { reply, react } = conText;
-            try {
-                await react("🔍");
-                const { data } = await AX.get(`${DB}/lookuptable.php?l=${lg.id}&s=${currentSeason()}`);
-                const rows = [...(data?.table || [])].sort((a, b) => (parseInt(b.intGoalsFor) || 0) - (parseInt(a.intGoalsFor) || 0)).slice(0, 10);
-                if (!rows.length) {
-                    await react("❌");
-                    return reply("Data not available right now.");
-                }
-                const list = rows.map((r, i) => `${i + 1}. *${r.strTeam}* — ⚽ ${r.intGoalsFor} scored in ${r.intPlayed} games`).join("\n");
-                await reply(`👟 *${lg.name} — TOP ATTACK*\n_(top scoring teams; player-level scorers need a paid feed)_\n\n${list}`);
-                await react("✅");
-            } catch (error) {
-                await react("❌");
-                reply("Failed to fetch scorers. Please try again.");
-            }
-        }
-    );
-    // Upcoming fixtures
-    mxd(
-        { pattern: `${key}upcoming`, category: "sports", react: "📅", aliases: [`${key}fixtures`], description: `${lg.name} upcoming fixtures` },
-        async (from, Malvin, conText) => {
-            const { reply, react } = conText;
-            try {
-                await react("🔍");
-                const { data } = await AX.get(`${DB}/eventsnextleague.php?id=${lg.id}`);
-                const games = (data?.events || []).slice(0, 10);
-                if (!games.length) {
-                    await react("❌");
-                    return reply("No upcoming fixtures found.");
-                }
-                const list = games.map(g => `📅 ${g.dateEvent} ${g.strTime || ""}\n   *${g.strEvent}* (${g.strVenue || lg.name})`).join("\n\n");
-                await reply(`📅 *${lg.name} — UPCOMING*\n\n${list}`);
-                await react("✅");
-            } catch (error) {
-                await react("❌");
-                reply("Failed to fetch fixtures. Please try again.");
-            }
-        }
-    );
-}
+// ==================== PREMIER LEAGUE COMMANDS ====================
 
-// ==================== ODDS (fixtures + honest note) ====================
+// Premier League Standings
+mxd(
+    {
+        pattern: "epltable",
+        category: "sports",
+        react: "📊",
+        aliases: ["eplstandings", "premierleaguetable"],
+        description: "Premier League standings/table",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/epl/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for Premier League");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => 
+                `${t.position}. *${t.team}* - ${t.points} pts (P:${t.played} W:${t.won} D:${t.draw} L:${t.lost} GD:${t.goalDifference})`
+            ).join("\n");
+
+            let message = `╭══〘〘 *PREMIER LEAGUE STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `epl_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `epl_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            const handleResponse = async (event) => {
+                const messageData = event.messages[0];
+                if (!messageData.message) return;
+
+                const selectedButtonId = extractButtonId(messageData.message);
+                if (!selectedButtonId) return;
+                if (messageData.key?.remoteJid !== from) return;
+
+                if (selectedButtonId.includes("epl_topscorers")) {
+                    await react("⚽");
+                    const scorersData = await axios.get(`${MalvinTechApi}/sports/epl/topscorers?apikey=${MalvinApiKey}&limit=10`, { timeout: 15000 });
+                    if (scorersData.data?.status && scorersData.data?.data?.topScorers?.length) {
+                        const scorersText = scorersData.data.data.topScorers.map(s => `${s.rank}. ${s.player} (${s.team}) - ${s.goals} goals`).join("\n");
+                        await reply(`⚽ *PREMIER LEAGUE TOP SCORERS*\n\n${scorersText}`, messageData);
+                    }
+                } else if (selectedButtonId.includes("epl_upcoming")) {
+                    await react("📅");
+                    const upcomingData = await axios.get(`${MalvinTechApi}/sports/epl/upcoming?apikey=${MalvinApiKey}`, { timeout: 15000 });
+                    if (upcomingData.data?.status && upcomingData.data?.data?.matches?.length) {
+                        const upcomingText = upcomingData.data.data.matches.slice(0, 10).map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+                        await reply(`📅 *PREMIER LEAGUE UPCOMING MATCHES*\n\n${upcomingText}`, messageData);
+                    }
+                }
+                
+                Malvin.ev.off("messages.upsert", handleResponse);
+            };
+
+            Malvin.ev.on("messages.upsert", handleResponse);
+            setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
+            await react("✅");
+        } catch (error) {
+            console.error("EPL standings error:", error);
+            await react("❌");
+            reply("Failed to fetch Premier League standings.");
+        }
+    }
+);
+
+// Premier League Top Scorers
+mxd(
+    {
+        pattern: "epltopscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["eplscorers", "premierleaguescorers"],
+        description: "Premier League top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/epl/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for Premier League");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            let message = `╭══〘〘 *PREMIER LEAGUE TOP SCORERS* 〙〙═⊷
+${scorers.map(s => `│↠${s.rank}. ${s.player} - ${s.goals} goals (${s.team})`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `epl_table_${Date.now()}`, text: "📊 Standings" },
+                    { id: `epl_upcoming2_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Premier League top scorers.");
+        }
+    }
+);
+
+// Premier League Upcoming Matches
+mxd(
+    {
+        pattern: "eplupcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["eplfixtures", "premierleaguefixtures"],
+        description: "Premier League upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/epl/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in Premier League");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            let message = `╭══〘〘 *PREMIER LEAGUE UPCOMING MATCHES* 〙〙═⊷
+${matches.map((m, i) => `│↠${i + 1}. ${m.homeTeam} vs ${m.awayTeam} (${m.date})`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `epl_table2_${Date.now()}`, text: "📊 Standings" },
+                    { id: `epl_topscorers2_${Date.now()}`, text: "⚽ Top Scorers" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Premier League matches.");
+        }
+    }
+);
+
+// ==================== BUNDESLIGA COMMANDS ====================
+
+mxd(
+    {
+        pattern: "bundesligatable",
+        category: "sports",
+        react: "📊",
+        aliases: ["bundesligastandings"],
+        description: "Bundesliga standings/table",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/bundesliga/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for Bundesliga");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => `${t.position}. *${t.team}* - ${t.points} pts`).join("\n");
+
+            let message = `╭══〘〘 *BUNDESLIGA STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `bundesliga_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `bundesliga_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Bundesliga standings.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "bundesligatopscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["bundesligascorers"],
+        description: "Bundesliga top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/bundesliga/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for Bundesliga");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            await reply(`⚽ 🇩🇪 *BUNDESLIGA TOP SCORERS*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Bundesliga top scorers.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "bundesligaupcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["bundesligafixtures"],
+        description: "Bundesliga upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/bundesliga/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in Bundesliga");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            await reply(`📅 🇩🇪 *BUNDESLIGA UPCOMING MATCHES*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Bundesliga matches.");
+        }
+    }
+);
+
+// ==================== LA LIGA COMMANDS ====================
+
+mxd(
+    {
+        pattern: "laligatable",
+        category: "sports",
+        react: "📊",
+        aliases: ["laligastandings"],
+        description: "La Liga standings/table",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/laliga/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for La Liga");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => `${t.position}. *${t.team}* - ${t.points} pts`).join("\n");
+
+            let message = `╭══〘〘 *LA LIGA STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `laliga_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `laliga_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch La Liga standings.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "laligatopscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["laligascorers"],
+        description: "La Liga top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/laliga/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for La Liga");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            await reply(`⚽ 🇪🇸 *LA LIGA TOP SCORERS*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch La Liga top scorers.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "laligaupcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["laligafixtures"],
+        description: "La Liga upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/laliga/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in La Liga");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            await reply(`📅 🇪🇸 *LA LIGA UPCOMING MATCHES*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch La Liga matches.");
+        }
+    }
+);
+
+// ==================== SERIE A COMMANDS ====================
+
+mxd(
+    {
+        pattern: "serieatable",
+        category: "sports",
+        react: "📊",
+        aliases: ["serieastandings"],
+        description: "Serie A standings/table",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/seriea/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for Serie A");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => `${t.position}. *${t.team}* - ${t.points} pts`).join("\n");
+
+            let message = `╭══〘〘 *SERIE A STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `seriea_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `seriea_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Serie A standings.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "serieatopscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["serieascorers"],
+        description: "Serie A top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/seriea/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for Serie A");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            await reply(`⚽ 🇮🇹 *SERIE A TOP SCORERS*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Serie A top scorers.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "serieaupcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["serieafixtures"],
+        description: "Serie A upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/seriea/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in Serie A");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            await reply(`📅 🇮🇹 *SERIE A UPCOMING MATCHES*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Serie A matches.");
+        }
+    }
+);
+
+// ==================== LIGUE 1 COMMANDS ====================
+
+mxd(
+    {
+        pattern: "ligue1table",
+        category: "sports",
+        react: "📊",
+        aliases: ["ligue1standings"],
+        description: "Ligue 1 standings/table",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/ligue1/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for Ligue 1");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => `${t.position}. *${t.team}* - ${t.points} pts`).join("\n");
+
+            let message = `╭══〘〘 *LIGUE 1 STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `ligue1_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `ligue1_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Ligue 1 standings.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "ligue1topscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["ligue1scorers"],
+        description: "Ligue 1 top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/ligue1/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for Ligue 1");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            await reply(`⚽ 🇫🇷 *LIGUE 1 TOP SCORERS*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Ligue 1 top scorers.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "ligue1upcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["ligue1fixtures"],
+        description: "Ligue 1 upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/ligue1/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in Ligue 1");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            await reply(`📅 🇫🇷 *LIGUE 1 UPCOMING MATCHES*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Ligue 1 matches.");
+        }
+    }
+);
+
+// ==================== UEFA CHAMPIONS LEAGUE COMMANDS ====================
+
+mxd(
+    {
+        pattern: "ucltable",
+        category: "sports",
+        react: "📊",
+        aliases: ["uclstandings", "championsleaguetable"],
+        description: "UEFA Champions League standings",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/ucl/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for Champions League");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => `${t.position}. *${t.team}* - ${t.points} pts`).join("\n");
+
+            let message = `╭══〘〘 *UEFA CHAMPIONS LEAGUE STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `ucl_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `ucl_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Champions League standings.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "ucltopscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["uclscorers", "championsleaguescorers"],
+        description: "UEFA Champions League top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/ucl/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for Champions League");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            await reply(`⚽ 🏆 *UEFA CHAMPIONS LEAGUE TOP SCORERS*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Champions League top scorers.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "uclupcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["uclfixtures", "championsleaguefixtures"],
+        description: "UEFA Champions League upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/ucl/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in Champions League");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            await reply(`📅 🏆 *UEFA CHAMPIONS LEAGUE UPCOMING MATCHES*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch Champions League matches.");
+        }
+    }
+);
+
+// ==================== UEFA EUROPEAN CHAMPIONSHIP COMMANDS ====================
+
+mxd(
+    {
+        pattern: "eurostable",
+        category: "sports",
+        react: "📊",
+        aliases: ["eurosstandings", "eurochampionship"],
+        description: "UEFA European Championship standings",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/euros/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for European Championship");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => `${t.position}. *${t.team}* - ${t.points} pts`).join("\n");
+
+            let message = `╭══〘〘 *UEFA EUROPEAN CHAMPIONSHIP STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `euros_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `euros_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch European Championship standings.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "eurostopscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["euros scorers"],
+        description: "UEFA European Championship top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/euros/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for European Championship");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            await reply(`⚽ 🇪🇺 *UEFA EUROPEAN CHAMPIONSHIP TOP SCORERS*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch European Championship top scorers.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "eurosupcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["euros fixtures"],
+        description: "UEFA European Championship upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/euros/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in European Championship");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            await reply(`📅 🇪🇺 *UEFA EUROPEAN CHAMPIONSHIP UPCOMING MATCHES*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch European Championship matches.");
+        }
+    }
+);
+
+// ==================== FIFA WORLD CUP COMMANDS ====================
+
+mxd(
+    {
+        pattern: "fifatable",
+        category: "sports",
+        react: "📊",
+        aliases: ["worldcuptable", "fifaworldcup"],
+        description: "FIFA World Cup standings",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+        try {
+            await react("📊");
+            const apiUrl = `${MalvinTechApi}/sports/fifa/standings?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.standings?.length) {
+                await reply("📊 No standings available for World Cup");
+                await react("✅");
+                return;
+            }
+
+            const standings = data.data.standings.slice(0, 10);
+            const text = standings.map(t => `${t.position}. *${t.team}* - ${t.points} pts`).join("\n");
+
+            let message = `╭══〘〘 *FIFA WORLD CUP STANDINGS* 〙〙═⊷
+${standings.map(t => `│↠${t.position}. ${t.team} - ${t.points} pts`).join("\n")}
+╰═════════════════⊷`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `fifa_topscorers_${Date.now()}`, text: "⚽ Top Scorers" },
+                    { id: `fifa_upcoming_${Date.now()}`, text: "📅 Upcoming" },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch World Cup standings.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "fifatopscorers",
+        category: "sports",
+        react: "⚽",
+        aliases: ["worldcupscorers"],
+        description: "FIFA World Cup top scorers",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("⚽");
+            const apiUrl = `${MalvinTechApi}/sports/fifa/topscorers?apikey=${MalvinApiKey}&limit=10`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.topScorers?.length) {
+                await reply("⚽ No top scorers data for World Cup");
+                await react("✅");
+                return;
+            }
+
+            const scorers = data.data.topScorers;
+            const text = scorers.map(s => `${s.rank}. *${s.player}* (${s.team}) - ${s.goals} goals`).join("\n");
+
+            await reply(`⚽ 🌍 *FIFA WORLD CUP TOP SCORERS*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch World Cup top scorers.");
+        }
+    }
+);
+
+mxd(
+    {
+        pattern: "fifaupcoming",
+        category: "sports",
+        react: "📅",
+        aliases: ["worldcupfixtures"],
+        description: "FIFA World Cup upcoming matches",
+    },
+    async (from, Malvin, conText) => {
+        const { reply, react, MalvinTechApi, MalvinApiKey } = conText;
+        try {
+            await react("📅");
+            const apiUrl = `${MalvinTechApi}/sports/fifa/upcoming?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.matches?.length) {
+                await reply("📅 No upcoming matches in World Cup");
+                await react("✅");
+                return;
+            }
+
+            const matches = data.data.matches.slice(0, 10);
+            const text = matches.map((m, i) => `${i + 1}. 📅 ${m.date}\n   ${m.homeTeam} vs ${m.awayTeam}`).join("\n\n");
+
+            await reply(`📅 🌍 *FIFA WORLD CUP UPCOMING MATCHES*\n\n${text}`);
+            await react("✅");
+        } catch (error) {
+            await react("❌");
+            reply("Failed to fetch World Cup matches.");
+        }
+    }
+);
+
+// ==================== BETTING ODDS ====================
 mxd(
     {
         pattern: "odds",
         category: "sports",
         react: "🎲",
-        aliases: ["bettingodds", "bookies"],
-        description: "Upcoming big matches (live odds need a paid feed)",
+        aliases: ["betting", "bettingodds", "footballodds"],
+        description: "Get football betting odds",
     },
     async (from, Malvin, conText) => {
-        const { reply, react } = conText;
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         try {
-            await react("🔍");
-            const { data } = await AX.get(`${DB}/eventsnextleague.php?id=4328`);
-            const games = (data?.events || []).slice(0, 5);
-            const list = games.length
-                ? games.map(g => `📅 ${g.dateEvent}\n   *${g.strEvent}*`).join("\n\n")
-                : "No fixtures found.";
-            await reply(`🎲 *UPCOMING (EPL)*\n_(live bookmaker odds need a paid feed)_\n\n${list}\n\n💡 Check your bookmaker for odds.`);
+            await react("🎲");
+            const apiUrl = `${MalvinTechApi}/sports/betting/odds?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.tips?.length) {
+                await reply("🎲 No betting odds available at the moment.");
+                await react("✅");
+                return;
+            }
+
+            const tips = data.data.tips.slice(0, 5);
+            const dateNow = Date.now();
+            const text = tips.map((t, i) => 
+                `${i + 1}. *${t.event}*\n   📅 ${t.commenceTime || t.date || "N/A"}\n   📊 Bookmakers: ${t.bookmakers || "Check odds"}`
+            ).join("\n\n");
+
+            let message = `╭══〘〘 *BETTING ODDS* 〙〙═⊷
+│↠🎲 ${fancy("source", "smallcaps")}: ${data.data.source}
+╰═════════════════⊷
+
+${text}`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `odds_refresh_${dateNow}`, text: "🔄 Refresh" },
+                ],
+            }, { quoted: mrxd });
+
             await react("✅");
+
         } catch (error) {
+            console.error("Odds error:", error);
             await react("❌");
-            reply("Failed to fetch data. Please try again.");
+            reply("Failed to fetch betting odds. Please try again.");
         }
     }
 );
 
-// ==================== FOOTBALL NEWS (BBC RSS, no key) ====================
+// ==================== FOOTBALL NEWS ====================
 mxd(
     {
         pattern: "footballnews",
         category: "sports",
         react: "📰",
-        aliases: ["soccernews", "sportnews"],
-        description: "Latest football news headlines",
+        aliases: ["soccernews", "fnews"],
+        description: "Get latest football news",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react } = conText;
-        const limit = q ? Math.min(10, parseInt(q) || 5) : 5;
+        const { reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         try {
             await react("📰");
-            const { data: xml } = await AX.get("https://feeds.bbci.co.uk/sport/football/rss.xml");
-            const $ = cheerio.load(xml, { xmlMode: true });
-            const items = [];
-            $("item").each((i, el) => {
-                if (i >= limit) return false;
-                items.push({ title: $(el).find("title").text(), link: $(el).find("link").text(), date: $(el).find("pubDate").text() });
-            });
-            if (!items.length) {
-                await react("❌");
-                return reply("Failed to fetch news.");
+            const apiUrl = `${MalvinTechApi}/sports/news?apikey=${MalvinApiKey}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data?.articles?.length) {
+                await reply("📰 No football news available.");
+                await react("✅");
+                return;
             }
-            const list = items.map((n, i) => `${i + 1}. *${n.title}*\n   📅 ${n.date}\n   🔗 ${n.link}`).join("\n\n");
-            await reply(`📰 *FOOTBALL NEWS*\n\n${list}`);
+
+            const articles = data.data.articles.slice(0, 5);
+            const dateNow = Date.now();
+            const text = articles.map((a, i) => 
+                `${i + 1}. *${a.title}*\n   📝 ${a.description?.substring(0, 80) || "No description"}...\n   📅 ${new Date(a.pubDate).toLocaleDateString()}`
+            ).join("\n\n");
+
+            let message = `╭══〘〘 *FOOTBALL NEWS* 〙〙═⊷
+│↠📰 ${fancy("source", "smallcaps")}: ${data.data.source}
+╰═════════════════⊷
+
+${text}`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                buttons: [
+                    { id: `news_refresh_${dateNow}`, text: "🔄 Refresh" },
+                ],
+            }, { quoted: mrxd });
+
             await react("✅");
+
         } catch (error) {
+            console.error("Football news error:", error);
             await react("❌");
-            reply("Failed to fetch news. Please try again.");
+            reply("Failed to fetch football news. Please try again.");
         }
     }
 );
 
-// ==================== SPORTS HELP ====================
+// ==================== HELP COMMAND ====================
 mxd(
     {
         pattern: "sportshelp",
         category: "sports",
         react: "⚽",
-        aliases: ["sportsmenu", "sportscmds"],
-        description: "Show all sports commands",
+        aliases: ["footballhelp", "soccerhelp"],
+        description: "Show all sports/football commands",
     },
     async (from, Malvin, conText) => {
-        const { reply, react } = conText;
+        const { reply, react, botName, botFooter } = conText;
+
         await react("⚽");
-        const leagues = Object.keys(LEAGUES).map(k => `│↠ .${k}table / .${k}upcoming / .${k}topscorers`).join("\n");
-        await reply(`╭══〘〘 *SPORTS COMMANDS* 〙〙═⊷\n│↠⚽ .player <name>\n│↠🏟️ .team <name>\n│↠🏟️ .venue <team>\n│↠⚔️ .h2h <A> | <B>\n│↠🔴 .livescore\n│↠🎬 .livehighlights\n│↠🎲 .odds\n│↠📰 .footballnews [limit]\n${leagues}\n╰═════════════════⊷\n\n_No key needed (TheSportsDB + BBC)._`);
+        
+        const message = `╭══〘〘 *SPORTS COMMANDS* 〙〙═⊷
+│↠⚽ .player <name> - Search players
+│↠🏆 .team <name> - Search teams
+│↠🏟️ .venue <name> - Search stadiums
+│↠⚔️ .h2h Team1 vs Team2 - Head-to-head
+│↠🔴 .livescore - Live scores
+│↠🎥 .livehighlights - Live scores + highlights
+╰═════════════════⊷
+
+━━ *LEAGUE STANDINGS* ━━
+│↠🏴󠁧󠁢󠁥󠁮󠁧󠁿 .epltable - Premier League
+│↠🇩🇪 .bundesligatable - Bundesliga
+│↠🇪🇸 .laligatable - La Liga
+│↠🇮🇹 .serieatable - Serie A
+│↠🇫🇷 .ligue1table - Ligue 1
+│↠🏆 .ucltable - Champions League
+│↠🇪🇺 .eurostable - European Championship
+│↠🌍 .fifatable - World Cup
+╰═════════════════⊷
+
+━━ *LEAGUE TOP SCORERS* ━━
+│↠⚽ .epltopscorers - Premier League
+│↠⚽ .bundesligatopscorers - Bundesliga
+│↠⚽ .laligatopscorers - La Liga
+│↠⚽ .serieatopscorers - Serie A
+│↠⚽ .ligue1topscorers - Ligue 1
+│↠⚽ .ucltopscorers - Champions League
+│↠⚽ .eurostopscorers - European Championship
+│↠⚽ .fifatopscorers - World Cup
+╰═════════════════⊷
+
+━━ *LEAGUE UPCOMING* ━━
+│↠📅 .eplupcoming - Premier League
+│↠📅 .bundesligaupcoming - Bundesliga
+│↠📅 .laligaupcoming - La Liga
+│↠📅 .serieaupcoming - Serie A
+│↠📅 .ligue1upcoming - Ligue 1
+│↠📅 .uclupcoming - Champions League
+│↠📅 .eurosupcoming - European Championship
+│↠📅 .fifaupcoming - World Cup
+╰═════════════════⊷
+
+━━ *OTHER* ━━
+│↠🎲 .odds - Betting odds
+│↠📰 .footballnews - Latest news
+╰═════════════════⊷
+
+> *${botFooter}*`;
+
+        await sendButtons(Malvin, from, {
+            title: botName,
+            text: message,
+            footer: `> *${botFooter}*`,
+            buttons: [
+                {
+                    name: "cta_copy",
+                    buttonParamsJson: JSON.stringify({
+                        display_text: "📋 Copy Help",
+                        copy_code: message,
+                    }),
+                },
+            ],
+        }, { quoted: mrxd });
+
         await react("✅");
     }
 );

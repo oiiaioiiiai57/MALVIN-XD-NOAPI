@@ -1,4 +1,4 @@
-﻿const { mxd } = require("../king");
+const { mxd } = require("../king");
 const axios = require("axios");
 
 function extractButtonId(msg) {

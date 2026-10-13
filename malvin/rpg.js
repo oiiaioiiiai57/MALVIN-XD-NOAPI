@@ -20,17 +20,27 @@ const { fancy } = require("../king/fancyFont");
 
 // ─── Canvas helper (same pattern as canvas.js) ────────────────────────────────
 async function sendCanvasImage(from, Malvin, conText, endpoint, params, caption) {
-    const { react, mek } = conText;
+    const { react, MalvinTechApi, MalvinApiKey, mek } = conText;
     try {
         await react('🎨');
-        // No-key fallback: send avatar/background image + text card
-        // instead of the hosted canvas renderer.
-        const img = params.avatarURL || params.backgroundURL;
-        if (img) {
-            await Malvin.sendMessage(from, { image: { url: img }, caption }, { quoted: mek });
-        } else {
-            await Malvin.sendMessage(from, { text: caption }, { quoted: mek });
+        // Default JSON response: { status, data: { url }, timestamp }.
+        // Just hand the URL straight to WhatsApp — no need to download the
+        // bytes ourselves and re-upload them.
+        const res = await axios.get(`${MalvinTechApi}/canvas/${endpoint}`, {
+            params: { apikey: MalvinApiKey, ...params },
+            timeout: 30000,
+            validateStatus: () => true,
+        });
+
+        if (res.status >= 400 || res.data?.status === false || !res.data?.data?.url) {
+            const { rawMessage } = classifyApiError(res.status, res.data);
+            throw new Error(rawMessage);
         }
+
+        await Malvin.sendMessage(from, {
+            image:   { url: res.data.data.url },
+            caption: caption,
+        }, { quoted: mek });
         await react('✅');
         return true;
     } catch (err) {
@@ -256,7 +266,26 @@ async function sendLevelUpCanvas(from, Malvin, conText, player, pfpUrl, fromLeve
         `> _${fancy("malvin xd rpg", "smallcaps")}_ 💎`;
 
     try {
-        await Malvin.sendMessage(from, { image: { url: pfpUrl }, caption });
+        const { MalvinTechApi, MalvinApiKey } = conText || {};
+        const res = await axios.get(`${MalvinTechApi}/canvas/level-up`, {
+            params: {
+                apikey:        MalvinApiKey,
+                backgroundURL: 'https://i.ibb.co/bjwZ2j1s/image.jpg',
+                avatarURL:     pfpUrl,
+                fromLevel,
+                toLevel:       player.level,
+                name,
+            },
+            timeout: 30000,
+            validateStatus: () => true,
+        });
+
+        if (res.status >= 400 || res.data?.status === false || !res.data?.data?.url) {
+            const { rawMessage } = classifyApiError(res.status, res.data);
+            throw new Error(rawMessage);
+        }
+
+        await Malvin.sendMessage(from, { image: { url: res.data.data.url }, caption });
     } catch (err) {
         console.error('[RPG] level-up card error:', err.message);
         await Malvin.sendMessage(from, { text: caption });

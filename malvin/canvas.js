@@ -6,18 +6,29 @@ const { classifyApiError } = require("../king/mxdcore2");
 const { fancy } = require("../king/fancyFont");
 
 async function sendCanvasImage(from, Malvin, conText, endpoint, params, caption) {
-    const { react, mek } = conText;
+    const { react, MalvinTechApi, MalvinApiKey, mek } = conText;
 
     try {
         await react("🎨");
-        // No-key fallback: send the source image (avatar/background) + caption
-        // instead of the hosted canvas renderer.
-        const img = params.avatarURL || params.backgroundURL || params.url || params.image;
-        if (img) {
-            await Malvin.sendMessage(from, { image: { url: img }, caption }, { quoted: mek });
-        } else {
-            await Malvin.sendMessage(from, { text: caption }, { quoted: mek });
+        // Default JSON response: { status, data: { url }, timestamp }.
+        // Just hand the URL straight to WhatsApp — no need to download the
+        // bytes ourselves and re-upload them.
+        const res = await axios.get(`${MalvinTechApi}/canvas/${endpoint}`, {
+            params: { apikey: MalvinApiKey, ...params },
+            timeout: 30000,
+            validateStatus: () => true,
+        });
+
+        if (res.status >= 400 || res.data?.status === false || !res.data?.data?.url) {
+            const { rawMessage } = classifyApiError(res.status, res.data);
+            throw new Error(rawMessage);
         }
+
+        await Malvin.sendMessage(from, {
+            image: { url: res.data.data.url },
+            caption: caption
+        }, { quoted: mek });
+        
         await react("✅");
     } catch (err) {
         console.error(`${endpoint} error:`, err.message);

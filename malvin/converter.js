@@ -3,28 +3,8 @@ const fs = require("fs").promises;
 const { StickerTypes } = require("wa-sticker-formatter");
 const { mrxd } = require('../king/mrxd');
 const axios = require("axios");
-const sharp = require("sharp");
 const { classifyApiError } = require("../king/mxdcore2");
 const { fancy } = require("../king/fancyFont");
-
-const escXml = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-async function bratBuffer(text, style = "white", blur = false) {
-    const bg = style === "black" ? "#000000" : style === "green" ? "#8ACE00" : "#ffffff";
-    const fg = style === "black" ? "#ffffff" : "#000000";
-    const words = String(text || "").slice(0, 200).split(/\s+/);
-    const lines = [];
-    let cur = "";
-    for (const w of words) {
-        if ((cur + " " + w).trim().length > 22) { lines.push(cur.trim()); cur = w; }
-        else cur += " " + w;
-    }
-    if (cur.trim()) lines.push(cur.trim());
-    const shown = lines.slice(0, 8).map(escXml).join("</tspan><tspan x=\"60\" dy=\"72\">");
-    const svg = `<svg width="800" height="800" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="800" fill="${bg}"/><text x="60" y="200" font-family="Arial,sans-serif" font-size="64" fill="${fg}" filter="url(#b)"><tspan x="60" dy="0">${shown}</tspan></text><defs><filter id="b"><feGaussianBlur stdDeviation="${blur ? 1.6 : 0.4}"/></filter></defs></svg>`;
-    let img = sharp(Buffer.from(svg));
-    if (blur) img = img.blur(1.2);
-    return img.png().toBuffer();
-}
 
 mxd({
     pattern: "sticker",
@@ -342,7 +322,7 @@ mxd(
         description: "Generate Brat text effect image",
     },
     async (from, Malvin, conText) => {
-        const { q, mek, reply, react, botFooter } = conText;
+        const { q, mek, reply, react, MalvinTechApi, MalvinApiKey, botFooter } = conText;
 
         if (!q) {
             await react("❌");
@@ -353,11 +333,23 @@ mxd(
 
         try {
             await react("🎨");
-            // Local generation (no API key): sharp SVG, brat album style.
-            const buf = await bratBuffer(text, (style || "white").toLowerCase(), blur === "true");
+            // Endpoint moved from /sticker/brat to /maker/brat, and is now
+            // JSON+url instead of raw bytes. isAnimated no longer exists —
+            // the animated version is the separate /maker/bratanim endpoint
+            // (used by .brat2 below), not a param on this one.
+            const res = await axios.get(`${MalvinTechApi}/maker/brat`, {
+                params: { apikey: MalvinApiKey, text, style: style || "white", blur: blur === "true" },
+                timeout: 30000,
+                validateStatus: () => true,
+            });
+
+            if (res.status >= 400 || res.data?.status === false || !res.data?.data?.url) {
+                const { rawMessage } = classifyApiError(res.status, res.data);
+                throw new Error(rawMessage);
+            }
 
             await Malvin.sendMessage(from, {
-                image: buf,
+                image: { url: res.data.data.url },
                 caption: `🎨 *Brat Text Effect*\n📝 ${text}\n\n> *${botFooter}*`
             }, { quoted: mek });
 
@@ -379,24 +371,33 @@ mxd(
         description: "Generate animated Brat text effect (words reveal one by one)",
     },
     async (from, Malvin, conText) => {
-        const { q, mek, reply, react, botFooter } = conText;
+        const { q, mek, reply, react, MalvinTechApi, MalvinApiKey, botFooter } = conText;
 
         if (!q) {
             await react("❌");
             return reply("Usage: .brat2 <text (max 10 words)> | <style> | <speed: slow|normal|fast>\n\n*Example:* .brat2 Hello there");
         }
 
-        const [text, style] = q.split("|").map(s => s.trim());
+        const [text, style, speed] = q.split("|").map(s => s.trim());
 
         try {
             await react("🎨");
-            // No-key fallback: animated endpoint has no free equivalent,
-            // send the static local version instead.
-            const buf = await bratBuffer(text, (style || "white").toLowerCase(), true);
+            // Separate endpoint from static brat, not a param — this one
+            // is capped at 10 words (vs 20 for the static version).
+            const res = await axios.get(`${MalvinTechApi}/maker/bratanim`, {
+                params: { apikey: MalvinApiKey, text, style: style || "white", speed: speed || "normal" },
+                timeout: 45000,
+                validateStatus: () => true,
+            });
+
+            if (res.status >= 400 || res.data?.status === false || !res.data?.data?.url) {
+                const { rawMessage } = classifyApiError(res.status, res.data);
+                throw new Error(rawMessage);
+            }
 
             await Malvin.sendMessage(from, {
-                image: buf,
-                caption: `🎨 *Brat Text Effect (static fallback)*\n📝 ${text}\n\n> *${botFooter}*`
+                image: { url: res.data.data.url },
+                caption: `🎨 *Brat Text Effect (Animated)*\n📝 ${text}\n\n> *${botFooter}*`
             }, { quoted: mek });
 
             await react("✅");
@@ -418,7 +419,7 @@ mxd(
         description: "Generate a Telegram-style quote chat bubble image",
     },
     async (from, Malvin, conText) => {
-        const { q, mek, reply, react, botFooter, sender } = conText;
+        const { q, mek, reply, react, MalvinTechApi, MalvinApiKey, botFooter } = conText;
 
         if (!q) {
             await react("❌");
@@ -433,23 +434,26 @@ mxd(
 
         try {
             await react("💬");
-            // Free quotly API (no key): bot.lyo.su
-            const bg = bubble === "white" ? "#ffffff" : bubble === "black" ? "#000000" : "#1b1429";
-            const payload = {
-                type: "quote", format: "png", backgroundColor: bg, width: 512, height: 768, scale: 2,
-                messages: [{
-                    entities: [], avatar: true,
-                    from: { id: 1, name: username.slice(0, 40), photo: { url: avatar || `https://api.dicebear.com/9.x/adventurer/png?seed=${encodeURIComponent(username)}` } },
-                    text: text.slice(0, 500), replyMessage: {},
-                }],
-            };
-            const res = await axios.post("https://bot.lyo.su/quote/generate", payload, { timeout: 30000, headers: { "Content-Type": "application/json" } });
-            const b64 = res.data?.result?.image;
-            if (!b64) throw new Error("quotly returned no image");
-            const buf = Buffer.from(b64, "base64");
+            const res = await axios.get(`${MalvinTechApi}/maker/qc`, {
+                params: {
+                    apikey: MalvinApiKey,
+                    username: username.slice(0, 40),
+                    text: text.slice(0, 500),
+                    ...(avatar ? { avatar } : {}),
+                    ...(color ? { color } : {}),
+                    ...(bubble ? { bubble } : {}),
+                },
+                timeout: 30000,
+                validateStatus: () => true,
+            });
+
+            if (res.status >= 400 || res.data?.status === false || !res.data?.data?.url) {
+                const { rawMessage } = classifyApiError(res.status, res.data);
+                throw new Error(rawMessage);
+            }
 
             await Malvin.sendMessage(from, {
-                image: buf,
+                image: { url: res.data.data.url },
                 caption: `> *${botFooter}*`
             }, { quoted: mek });
 
@@ -472,7 +476,7 @@ mxd(
         description: "Generate a fake iMessage press-and-hold screenshot",
     },
     async (from, Malvin, conText) => {
-        const { q, mek, reply, react, botFooter } = conText;
+        const { q, mek, reply, react, MalvinTechApi, MalvinApiKey, botFooter } = conText;
 
         if (!q) {
             await react("❌");
@@ -483,15 +487,25 @@ mxd(
 
         try {
             await react("📱");
-            // Local iMessage-style bubble (no API key) via sharp SVG.
-            const bubbleColor = bubble === "blue" ? "#0a84ff" : bubble === "green" ? "#30d158" : bubble?.startsWith("#") ? bubble : "#e9e9eb";
-            const fg = bubbleColor.toLowerCase() === "#e9e9eb" ? "#000000" : "#ffffff";
-            const label = `${time || ""}${clock ? "  " + clock : ""}`.trim();
-            const svg = `<svg width="800" height="500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" fill="#000000"/><rect x="80" y="120" width="640" height="220" rx="48" fill="${bubbleColor}"/><text x="120" y="230" font-family="Arial,sans-serif" font-size="40" fill="${fg}">${escXml(text.slice(0, 400))}</text><text x="400" y="400" font-family="Arial,sans-serif" font-size="30" fill="#999999" text-anchor="middle">${escXml(label)}</text></svg>`;
-            const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+            const res = await axios.get(`${MalvinTechApi}/maker/iqc`, {
+                params: {
+                    apikey: MalvinApiKey,
+                    text: text.slice(0, 400),
+                    ...(time ? { time } : {}),
+                    ...(clock ? { clock } : {}),
+                    ...(bubble ? { bubble } : {}),
+                },
+                timeout: 30000,
+                validateStatus: () => true,
+            });
+
+            if (res.status >= 400 || res.data?.status === false || !res.data?.data?.url) {
+                const { rawMessage } = classifyApiError(res.status, res.data);
+                throw new Error(rawMessage);
+            }
 
             await Malvin.sendMessage(from, {
-                image: buf,
+                image: { url: res.data.data.url },
                 caption: `> *${botFooter}*`
             }, { quoted: mek });
 

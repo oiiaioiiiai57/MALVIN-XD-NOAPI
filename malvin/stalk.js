@@ -4,8 +4,6 @@ const axios = require("axios");
 const { sendButtons } = require("malvin-btns");
 const { fancy } = require("../king/fancyFont");
 
-const AX = axios.create({ timeout: 15000 });
-
 function extractButtonId(msg) {
     if (!msg) return null;
     if (msg.templateButtonReplyMessage?.selectedId)
@@ -24,22 +22,7 @@ function extractButtonId(msg) {
     return null;
 }
 
-// Free metadata resolver (no key): Microlink returns title/description/image
-// for most public profile pages. Follower counts need a login, so stalk
-// cards show what is publicly reachable + a direct profile link.
-async function microlinkMeta(pageUrl) {
-    const { data } = await AX.get(`https://api.microlink.io?url=${encodeURIComponent(pageUrl)}`);
-    const d = data?.data;
-    if (!d) throw new Error("no metadata");
-    return {
-        title: d.title || null,
-        description: d.description || null,
-        image: d.image?.url || d.logo?.url || null,
-        url: d.url || pageUrl,
-    };
-}
-
-// ==================== GITHUB STALK (api.github.com, no key) ====================
+// ==================== GITHUB STALK ====================
 mxd(
     {
         pattern: "github",
@@ -49,7 +32,7 @@ mxd(
         description: "Get GitHub user profile information",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react, botName, botFooter } = conText;
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
 
         if (!q) {
             await react("❌");
@@ -58,71 +41,82 @@ mxd(
 
         try {
             await react("🔍");
-            const username = q.trim().split(/\s+/)[0];
-            const [{ data: u }, { data: reposAll }] = await Promise.all([
-                AX.get(`https://api.github.com/users/${encodeURIComponent(username)}`),
-                AX.get(`https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=100&sort=stars`),
-            ]).catch(() => [{ data: null }, { data: null }]);
+            const apiUrl = `${MalvinTechApi}/stalk/github?apikey=${MalvinApiKey}&username=${encodeURIComponent(q)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
 
-            if (!u?.login) {
+            if (!data?.status || !data?.data) {
                 await react("❌");
                 return reply("GitHub user not found.");
             }
 
-            const reposNorm = (Array.isArray(reposAll) ? reposAll : []).map(r => ({
-                name: r.name, stars: r.stargazers_count, forks: r.forks_count,
-                language: r.language, url: r.html_url,
-            }));
-            const totalStars = reposNorm.reduce((s, r) => s + (r.stars || 0), 0);
-            const topLangs = [...new Set(reposNorm.map(r => r.language).filter(Boolean))].slice(0, 5);
+            const r = data.data;
+            const profile = r.profile;
+            const stats = r.stats;
+            const repos = r.repositories.slice(0, 3);
             const dateNow = Date.now();
 
             const message = `╭══〘〘 *GITHUB STALK* 〙〙═⊷
-│↠🐙 ${fancy("username", "smallcaps")}: ${u.login}
-│↠📛 ${fancy("name", "smallcaps")}: ${u.name || "N/A"}
-│↠📝 ${fancy("bio", "smallcaps")}: ${u.bio || "No bio"}
-│↠🏢 ${fancy("company", "smallcaps")}: ${u.company || "N/A"}
-│↠📍 ${fancy("location", "smallcaps")}: ${u.location || "N/A"}
-│↠📅 ${fancy("joined", "smallcaps")}: ${new Date(u.created_at).toLocaleDateString()}
+│↠🐙 ${fancy("username", "smallcaps")}: ${profile.username}
+│↠📛 ${fancy("name", "smallcaps")}: ${profile.nickname || "N/A"}
+│↠📝 ${fancy("bio", "smallcaps")}: ${profile.bio || "No bio"}
+│↠🏢 ${fancy("company", "smallcaps")}: ${profile.company || "N/A"}
+│↠📍 ${fancy("location", "smallcaps")}: ${profile.location || "N/A"}
+│↠📅 ${fancy("joined", "smallcaps")}: ${new Date(profile.created_at).toLocaleDateString()}
 ╰═════════════════⊷
 
 📊 *${fancy("statistics", "smallcaps")}*
-│↠👥 ${fancy("followers", "smallcaps")}: ${u.followers}
-│↠👤 ${fancy("following", "smallcaps")}: ${u.following}
-│↠📁 ${fancy("repos", "smallcaps")}: ${u.public_repos}
-│↠⭐ ${fancy("total stars", "smallcaps")}: ${totalStars}
-│↠💻 ${fancy("top languages", "smallcaps")}: ${topLangs.join(", ") || "N/A"}
+│↠👥 ${fancy("followers", "smallcaps")}: ${stats.followers}
+│↠👤 ${fancy("following", "smallcaps")}: ${stats.following}
+│↠📁 ${fancy("repos", "smallcaps")}: ${stats.public_repos}
+│↠⭐ ${fancy("total stars", "smallcaps")}: ${stats.total_stars}
+│↠💻 ${fancy("top languages", "smallcaps")}: ${stats.top_languages.join(", ") || "N/A"}
 ╰═════════════════⊷
 
 📂 *${fancy("top repositories", "smallcaps")}*
-${reposNorm.slice(0, 3).map((repo, i) => `${i + 1}. ${repo.name}\n   ⭐ ${repo.stars} | 🍴 ${repo.forks} | 💻 ${repo.language || "N/A"}`).join("\n\n")}
+${repos.map((repo, i) => `${i + 1}. ${repo.name}\n   ⭐ ${repo.stars} | 🍴 ${repo.forks} | 💻 ${repo.language || "N/A"}`).join("\n\n")}
 `;
 
             await sendButtons(Malvin, from, {
                 title: botName,
                 text: message,
                 footer: `> *${botFooter}*`,
-                image: { url: u.avatar_url },
+                image: { url: profile.profile_pic },
                 buttons: [
-                    { name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "🔗 View Profile", url: u.html_url }) },
+                    {
+                        name: "cta_url",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "🔗 View Profile",
+                            url: profile.url,
+                        }),
+                    },
                     { id: `gh_repos_${dateNow}`, text: "📁 View All Repos" },
-                    { name: "cta_copy", buttonParamsJson: JSON.stringify({ display_text: "📋 Copy Username", copy_code: u.login }) },
+                    {
+                        name: "cta_copy",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "📋 Copy Username",
+                            copy_code: profile.username,
+                        }),
+                    },
                 ],
             }, { quoted: mrxd });
 
             const handleResponse = async (event) => {
                 const messageData = event.messages[0];
                 if (!messageData.message) return;
+
                 const selectedButtonId = extractButtonId(messageData.message);
                 if (!selectedButtonId || !selectedButtonId.includes(dateNow.toString())) return;
                 if (messageData.key?.remoteJid !== from) return;
+
                 if (selectedButtonId.startsWith("gh_repos")) {
                     await react("📁");
-                    const repoList = reposNorm.slice(0, 10).map((repo, i) =>
+                    const allRepos = r.repositories.slice(0, 10);
+                    const repoList = allRepos.map((repo, i) => 
                         `${i + 1}. *${repo.name}*\n   ⭐ ${repo.stars} | 🍴 ${repo.forks} | 💻 ${repo.language || "N/A"}\n   🔗 ${repo.url}`
                     ).join("\n\n");
-                    await reply(`📁 *${u.login}'s REPOSITORIES*\n\n${repoList}`, messageData);
+                    await reply(`📁 *${profile.username}'s REPOSITORIES*\n\n${repoList}`, messageData);
                 }
+                
                 Malvin.ev.off("messages.upsert", handleResponse);
             };
 
@@ -131,47 +125,14 @@ ${reposNorm.slice(0, 3).map((repo, i) => `${i + 1}. ${repo.name}\n   ⭐ ${repo.
             await react("✅");
 
         } catch (error) {
-            console.error("GitHub stalk error:", error.message);
+            console.error("GitHub stalk error:", error);
             await react("❌");
             reply("Failed to fetch GitHub profile. Please check the username.");
         }
     }
 );
 
-// Generic public-profile card (Microlink, no key).
-async function sendPublicProfileCard(from, Malvin, conText, { label, emoji, username, pageUrl, usage }) {
-    const { reply, react, botName, botFooter } = conText;
-    if (!username) {
-        await react("❌");
-        return reply(usage);
-    }
-    try {
-        await react("🔍");
-        const meta = await microlinkMeta(pageUrl);
-        const message = `╭══〘〘 *${label}* 〙〙═⊷
-│↠${emoji} ${fancy("user", "smallcaps")}: @${username}
-│↠📛 ${fancy("title", "smallcaps")}: ${meta.title || "N/A"}
-│↠📝 ${fancy("bio", "smallcaps")}: ${(meta.description || "No public bio").slice(0, 200)}
-╰═════════════════⊷
-
-⚠️ *${fancy("note", "smallcaps")}*: ${fancy("follower counts need a login, showing public info only", "smallcaps")}.`;
-
-        const buttons = [
-            { name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "🔗 View Profile", url: meta.url }) },
-            { name: "cta_copy", buttonParamsJson: JSON.stringify({ display_text: "📋 Copy Username", copy_code: username }) },
-        ];
-        const msgOpts = { title: botName, text: message, footer: `> *${botFooter}*`, buttons };
-        if (meta.image) msgOpts.image = { url: meta.image };
-        await sendButtons(Malvin, from, msgOpts, { quoted: mrxd });
-        await react("✅");
-    } catch (error) {
-        console.error(`${label} error:`, error.message);
-        await react("❌");
-        reply(`Failed to fetch profile. The account may be private or the username wrong.\n🔗 ${pageUrl}`);
-    }
-}
-
-// ==================== INSTAGRAM STALK (Microlink, no key) ====================
+// ==================== INSTAGRAM STALK ====================
 mxd(
     {
         pattern: "igstalk",
@@ -181,82 +142,309 @@ mxd(
         description: "Get Instagram user profile information",
     },
     async (from, Malvin, conText) => {
-        const username = (conText.q || "").replace(/^@/, "").trim().split(/\s+/)[0];
-        await sendPublicProfileCard(from, Malvin, conText, {
-            label: "INSTAGRAM STALK", emoji: "📸", username,
-            pageUrl: `https://www.instagram.com/${encodeURIComponent(username || "")}/`,
-            usage: "Please provide an Instagram username\n\n*Example:* .igstalk cristiano",
-        });
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
+        if (!q) {
+            await react("❌");
+            return reply("Please provide an Instagram username\n\n*Example:* .igstalk cristiano");
+        }
+
+        const cleanUsername = q.replace(/^@/, "").trim();
+
+        try {
+            await react("🔍");
+            const apiUrl = `${MalvinTechApi}/stalk/instagram?apikey=${MalvinApiKey}&username=${encodeURIComponent(cleanUsername)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data) {
+                await react("❌");
+                return reply("Instagram user not found.");
+            }
+
+            const r = data.data;
+            const dateNow = Date.now();
+
+            const message = `╭══〘〘 *INSTAGRAM STALK* 〙〙═⊷
+│↠📸 ${fancy("username", "smallcaps")}: @${r.username}
+│↠📛 ${fancy("full name", "smallcaps")}: ${r.full_name || "N/A"}
+│↠📝 ${fancy("bio", "smallcaps")}: ${r.bio || "No bio"}
+│↠✅ ${fancy("verified", "smallcaps")}: ${r.is_verified ? "Yes" : "No"}
+│↠🔒 ${fancy("private", "smallcaps")}: ${r.is_private ? "Yes" : "No"}
+│↠💼 ${fancy("business", "smallcaps")}: ${r.is_business ? "Yes" : "No"}
+│↠📂 ${fancy("category", "smallcaps")}: ${r.category || "N/A"}
+╰═════════════════⊷
+
+📊 *${fancy("statistics", "smallcaps")}*
+│↠👥 ${fancy("followers", "smallcaps")}: ${r.followers.toLocaleString()}
+│↠👤 ${fancy("following", "smallcaps")}: ${r.following.toLocaleString()}
+│↠📷 ${fancy("posts", "smallcaps")}: ${r.posts.toLocaleString()}
+│↠📚 ${fancy("highlights", "smallcaps")}: ${r.highlight_count || 0}
+│↠📖 ${fancy("has stories", "smallcaps")}: ${r.has_stories ? "Yes" : "No"}
+╰═════════════════⊷
+`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                image: { url: r.profile_pic },
+                buttons: [
+                    {
+                        name: "cta_url",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "🔗 View Profile",
+                            url: r.profile_url,
+                        }),
+                    },
+                    { id: `ig_dp_${dateNow}`, text: "🖼️ Download DP" },
+                    {
+                        name: "cta_copy",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "📋 Copy Username",
+                            copy_code: r.username,
+                        }),
+                    },
+                ],
+            }, { quoted: mrxd });
+
+            const handleResponse = async (event) => {
+                const messageData = event.messages[0];
+                if (!messageData.message) return;
+
+                const selectedButtonId = extractButtonId(messageData.message);
+                if (!selectedButtonId || !selectedButtonId.includes(dateNow.toString())) return;
+                if (messageData.key?.remoteJid !== from) return;
+
+                if (selectedButtonId.startsWith("ig_dp")) {
+                    await react("🖼️");
+                    await Malvin.sendMessage(from, {
+                        image: { url: r.profile_pic },
+                        caption: `🖼️ *${r.username}'s Profile Picture*`
+                    }, { quoted: messageData });
+                }
+                
+                Malvin.ev.off("messages.upsert", handleResponse);
+            };
+
+            Malvin.ev.on("messages.upsert", handleResponse);
+            setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
+            await react("✅");
+
+        } catch (error) {
+            console.error("Instagram stalk error:", error);
+            await react("❌");
+            reply("Failed to fetch Instagram profile. Please check the username.");
+        }
     }
 );
 
-// ==================== TIKTOK STALK (oEmbed + Microlink, no key) ====================
+// ==================== TIKTOK STALK ====================
 mxd(
     {
         pattern: "ttstalk",
         category: "stalk",
         react: "📱",
-        aliases: ["tiktokstalk", "tt"],
+        aliases: ["tiktokstalk", "tiktok", "tt"],
         description: "Get TikTok user profile information",
     },
     async (from, Malvin, conText) => {
-        const { reply, react, botName, botFooter } = conText;
-        const username = (conText.q || "").replace(/^@/, "").trim().split(/\s+/)[0];
-        if (!username) {
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
+        if (!q) {
             await react("❌");
-            return reply("Please provide a TikTok username\n\n*Example:* .ttstalk malvintech");
+            return reply("Please provide a TikTok username\n\n*Example:* .ttstalk tiktok");
         }
+
+        const cleanUsername = q.replace(/^@/, "").trim();
+
         try {
             await react("🔍");
-            let title = null, thumb = null;
-            try {
-                const { data } = await AX.get(`https://www.tiktok.com/oembed?url=${encodeURIComponent(`https://www.tiktok.com/@${username}`)}`);
-                title = data?.author_name || null; thumb = data?.thumbnail_url || null;
-            } catch (_) {}
-            const pageUrl = `https://www.tiktok.com/@${encodeURIComponent(username)}`;
-            const meta = await microlinkMeta(pageUrl).catch(() => null);
+            const apiUrl = `${MalvinTechApi}/stalk/tiktok?apikey=${MalvinApiKey}&username=${encodeURIComponent(cleanUsername)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data) {
+                await react("❌");
+                return reply("TikTok user not found.");
+            }
+
+            const r = data.data;
+            const basic = r.basic_info;
+            const stats = r.statistics;
+            const engagement = r.engagement;
+            const dateNow = Date.now();
+
             const message = `╭══〘〘 *TIKTOK STALK* 〙〙═⊷
-│↠📱 ${fancy("user", "smallcaps")}: @${username}
-│↠📛 ${fancy("author", "smallcaps")}: ${title || meta?.title || "N/A"}
-│↠📝 ${fancy("bio", "smallcaps")}: ${((meta?.description) || "No public bio").slice(0, 200)}
+│↠📱 ${fancy("username", "smallcaps")}: @${basic.username}
+│↠📛 ${fancy("nickname", "smallcaps")}: ${basic.nickname}
+│↠📝 ${fancy("bio", "smallcaps")}: ${basic.bio || "No bio"}
+│↠✅ ${fancy("verified", "smallcaps")}: ${basic.verified ? "Yes" : "No"}
+│↠🔒 ${fancy("private", "smallcaps")}: ${basic.private_account ? "Yes" : "No"}
+│↠🌍 ${fancy("region", "smallcaps")}: ${basic.region}
 ╰═════════════════⊷
 
-⚠️ *${fancy("note", "smallcaps")}*: ${fancy("follower counts need a login, showing public info only", "smallcaps")}.`;
-            const msgOpts = { title: botName, text: message, footer: `> *${botFooter}*`, buttons: [
-                { name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "🔗 View Profile", url: pageUrl }) },
-                { name: "cta_copy", buttonParamsJson: JSON.stringify({ display_text: "📋 Copy Username", copy_code: username }) },
-            ]};
-            if (thumb || meta?.image) msgOpts.image = { url: thumb || meta.image };
-            await sendButtons(Malvin, from, msgOpts, { quoted: mrxd });
+📊 *${fancy("statistics", "smallcaps")}*
+│↠👥 ${fancy("followers", "smallcaps")}: ${stats.followers.toLocaleString()}
+│↠👤 ${fancy("following", "smallcaps")}: ${stats.following.toLocaleString()}
+│↠❤️ ${fancy("total likes", "smallcaps")}: ${stats.likes.toLocaleString()}
+│↠🎬 ${fancy("videos", "smallcaps")}: ${stats.videos.toLocaleString()}
+╰═════════════════⊷
+
+📈 *${fancy("engagement", "smallcaps")}*
+│↠📊 ${fancy("engagement rate", "smallcaps")}: ${engagement.engagement_rate}
+│↠⭐ ${fancy("avg likes/video", "smallcaps")}: ${engagement.avg_likes_per_video.toLocaleString()}
+╰═════════════════⊷
+`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                image: { url: basic.avatar },
+                buttons: [
+                    {
+                        name: "cta_url",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "🔗 View Profile",
+                            url: basic.profile_url,
+                        }),
+                    },
+                    { id: `tt_stats_${dateNow}`, text: "📊 Full Stats" },
+                    {
+                        name: "cta_copy",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "📋 Copy Username",
+                            copy_code: basic.username,
+                        }),
+                    },
+                ],
+            }, { quoted: mrxd });
+
+            const handleResponse = async (event) => {
+                const messageData = event.messages[0];
+                if (!messageData.message) return;
+
+                const selectedButtonId = extractButtonId(messageData.message);
+                if (!selectedButtonId || !selectedButtonId.includes(dateNow.toString())) return;
+                if (messageData.key?.remoteJid !== from) return;
+
+                if (selectedButtonId.startsWith("tt_stats")) {
+                    await react("📊");
+                    await reply(`📊 *${basic.username}'s FULL STATS*\n\n` +
+                        `👥 Followers: ${stats.followers.toLocaleString()}\n` +
+                        `👤 Following: ${stats.following.toLocaleString()}\n` +
+                        `❤️ Likes: ${stats.likes.toLocaleString()}\n` +
+                        `🎬 Videos: ${stats.videos.toLocaleString()}\n` +
+                        `📈 Engagement Rate: ${engagement.engagement_rate}\n` +
+                        `⭐ Avg Likes/Video: ${engagement.avg_likes_per_video.toLocaleString()}`, messageData);
+                }
+                
+                Malvin.ev.off("messages.upsert", handleResponse);
+            };
+
+            Malvin.ev.on("messages.upsert", handleResponse);
+            setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
             await react("✅");
+
         } catch (error) {
-            console.error("TikTok stalk error:", error.message);
+            console.error("TikTok stalk error:", error);
             await react("❌");
             reply("Failed to fetch TikTok profile. Please check the username.");
         }
     }
 );
 
-// ==================== TWITTER/X STALK (Microlink, no key) ====================
+// ==================== TWITTER/X STALK ====================
 mxd(
     {
         pattern: "twitterstalk",
         category: "stalk",
         react: "🐦",
-        aliases: ["xstalk", "twstalk", "twitter"],
-        description: "Get Twitter/X profile information",
+        aliases: ["xstalk", "twitter", "x"],
+        description: "Get Twitter/X user profile information",
     },
     async (from, Malvin, conText) => {
-        const username = (conText.q || "").replace(/^@/, "").trim().split(/\s+/)[0];
-        await sendPublicProfileCard(from, Malvin, conText, {
-            label: "TWITTER STALK", emoji: "🐦", username,
-            pageUrl: `https://x.com/${encodeURIComponent(username || "")}`,
-            usage: "Please provide a Twitter/X username\n\n*Example:* .twitterstalk elonmusk",
-        });
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
+        if (!q) {
+            await react("❌");
+            return reply("Please provide a Twitter/X username\n\n*Example:* .twitterstalk elonmusk");
+        }
+
+        const cleanUsername = q.replace(/^@/, "").trim();
+
+        try {
+            await react("🔍");
+            // API expects the query param as "user", not "username"
+            const apiUrl = `${MalvinTechApi}/stalk/twitter?apikey=${MalvinApiKey}&user=${encodeURIComponent(cleanUsername)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data) {
+                await react("❌");
+                return reply("Twitter/X user not found.");
+            }
+
+            const r = data.data;
+            const basic = r.basic_info;
+            const stats = r.statistics;
+            const engagement = r.engagement;
+
+            const message = `╭══〘〘 *TWITTER/X STALK* 〙〙═⊷
+│↠🐦 ${fancy("name", "smallcaps")}: ${basic.name}
+│↠@ ${fancy("username", "smallcaps")}: @${basic.username}
+│↠📝 ${fancy("bio", "smallcaps")}: ${basic.bio || "No bio"}
+│↠📍 ${fancy("location", "smallcaps")}: ${basic.location}
+│↠📅 ${fancy("joined", "smallcaps")}: ${new Date(basic.joined_date).toLocaleDateString()}
+│↠✅ ${fancy("verified", "smallcaps")}: ${basic.verified ? "Yes" : "No"}
+╰═════════════════⊷
+
+📊 *${fancy("statistics", "smallcaps")}*
+│↠👥 ${fancy("followers", "smallcaps")}: ${stats.followers.toLocaleString()}
+│↠👤 ${fancy("following", "smallcaps")}: ${stats.following.toLocaleString()}
+│↠❤️ ${fancy("likes", "smallcaps")}: ${stats.likes.toLocaleString()}
+│↠🐦 ${fancy("tweets", "smallcaps")}: ${stats.tweets.toLocaleString()}
+│↠📷 ${fancy("media", "smallcaps")}: ${stats.media.toLocaleString()}
+╰═════════════════⊷
+
+📈 *${fancy("engagement", "smallcaps")}*
+│↠📊 ${fancy("engagement rate", "smallcaps")}: ${engagement.engagement_rate}
+│↠📊 ${fancy("ratio", "smallcaps")}: ${engagement.ratio}
+╰═════════════════⊷
+`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                image: { url: basic.profile_image },
+                buttons: [
+                    {
+                        name: "cta_url",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "🔗 View Profile",
+                            url: basic.profile_url,
+                        }),
+                    },
+                    {
+                        name: "cta_copy",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "📋 Copy Username",
+                            copy_code: basic.username,
+                        }),
+                    },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+
+        } catch (error) {
+            console.error("Twitter stalk error:", error);
+            await react("❌");
+            reply("Failed to fetch Twitter/X profile. Please check the username.");
+        }
     }
 );
 
-// ==================== YOUTUBE STALK (yt-search, no key) ====================
+// ==================== YOUTUBE STALK ====================
 mxd(
     {
         pattern: "ytstalk",
@@ -266,65 +454,99 @@ mxd(
         description: "Get YouTube channel information",
     },
     async (from, Malvin, conText) => {
-        const { q, reply, react, botName, botFooter } = conText;
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
         if (!q) {
             await react("❌");
             return reply("Please provide a YouTube username or channel handle\n\n*Example:* .ytstalk @MrBeast");
         }
-        const handle = q.trim().split(/\s+/)[0];
+
+        const cleanUsername = q.startsWith("@") ? q.slice(1) : q;
+
         try {
             await react("🔍");
-            const yts = require("yt-search");
-            const r = await yts(handle);
-            const videos = (r?.videos || []).slice(0, 10);
-            if (!videos.length) {
+            const apiUrl = `${MalvinTechApi}/stalk/youtube?apikey=${MalvinApiKey}&username=${encodeURIComponent(cleanUsername)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data) {
                 await react("❌");
                 return reply("YouTube channel not found.");
             }
-            const author = videos[0].author || {};
+
+            const r = data.data;
+            const channel = r.channel;
+            const videos = r.latest_videos.slice(0, 3);
             const dateNow = Date.now();
+
             const message = `╭══〘〘 *YOUTUBE STALK* 〙〙═⊷
-│↠📺 ${fancy("channel", "smallcaps")}: ${author.name || handle}
-│↠🔗 ${fancy("url", "smallcaps")}: ${author.url || "N/A"}
+│↠📺 ${fancy("title", "smallcaps")}: ${channel.title}
+│↠@ ${fancy("handle", "smallcaps")}: @${channel.username}
+│↠📝 ${fancy("description", "smallcaps")}: ${channel.description || "No description"}
+│↠👥 ${fancy("subscribers", "smallcaps")}: ${channel.subscribers.toLocaleString()}
+│↠🎬 ${fancy("videos", "smallcaps")}: ${channel.videos_count.toLocaleString()}
 ╰═════════════════⊷
 
 🎥 *${fancy("latest videos", "smallcaps")}*
-${videos.slice(0, 3).map((v, i) => `${i + 1}. ${v.title}\n   👁️ ${v.views?.toLocaleString?.() ?? v.views} views | ⏱️ ${v.timestamp} | 📅 ${v.ago}`).join("\n\n")}
+${videos.map((v, i) => `${i + 1}. ${v.title}\n   👁️ ${v.views.toLocaleString()} views | ⏱️ ${v.duration} | 📅 ${v.published}`).join("\n\n")}
 `;
+
             await sendButtons(Malvin, from, {
-                title: botName, text: message, footer: `> *${botFooter}*`,
-                image: videos[0].thumbnail ? { url: videos[0].thumbnail } : undefined,
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                image: { url: channel.avatar },
                 buttons: [
-                    ...(author.url ? [{ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "🔗 View Channel", url: author.url }) }] : []),
+                    {
+                        name: "cta_url",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "🔗 View Channel",
+                            url: channel.url,
+                        }),
+                    },
                     { id: `yt_videos_${dateNow}`, text: "🎬 More Videos" },
-                    { name: "cta_copy", buttonParamsJson: JSON.stringify({ display_text: "📋 Copy Handle", copy_code: handle }) },
+                    {
+                        name: "cta_copy",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "📋 Copy Handle",
+                            copy_code: channel.username,
+                        }),
+                    },
                 ],
             }, { quoted: mrxd });
 
             const handleResponse = async (event) => {
                 const messageData = event.messages[0];
                 if (!messageData.message) return;
+
                 const selectedButtonId = extractButtonId(messageData.message);
                 if (!selectedButtonId || !selectedButtonId.includes(dateNow.toString())) return;
                 if (messageData.key?.remoteJid !== from) return;
+
                 if (selectedButtonId.startsWith("yt_videos")) {
                     await react("🎬");
-                    await reply(`🎬 *${author.name || handle}'s LATEST VIDEOS*\n\n${videos.map((v, i) => `${i + 1}. *${v.title}*\n   👁️ ${v.views?.toLocaleString?.() ?? v.views} views | ⏱️ ${v.timestamp}\n   🔗 ${v.url}`).join("\n\n")}`, messageData);
+                    const allVideos = r.latest_videos.slice(0, 10);
+                    const videoList = allVideos.map((v, i) => 
+                        `${i + 1}. *${v.title}*\n   👁️ ${v.views.toLocaleString()} views | ⏱️ ${v.duration}\n   📅 ${v.published}`
+                    ).join("\n\n");
+                    await reply(`🎬 *${channel.title}'s LATEST VIDEOS*\n\n${videoList}`, messageData);
                 }
+                
                 Malvin.ev.off("messages.upsert", handleResponse);
             };
+
             Malvin.ev.on("messages.upsert", handleResponse);
             setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
             await react("✅");
+
         } catch (error) {
-            console.error("YouTube stalk error:", error.message);
+            console.error("YouTube stalk error:", error);
             await react("❌");
             reply("Failed to fetch YouTube channel. Please check the handle.");
         }
     }
 );
 
-// ==================== PINTEREST STALK (Microlink, no key) ====================
+// ==================== PINTEREST STALK ====================
 mxd(
     {
         pattern: "pinstalk",
@@ -334,12 +556,74 @@ mxd(
         description: "Get Pinterest user profile information",
     },
     async (from, Malvin, conText) => {
-        const username = (conText.q || "").replace(/^@/, "").trim().split(/\s+/)[0];
-        await sendPublicProfileCard(from, Malvin, conText, {
-            label: "PINTEREST STALK", emoji: "📌", username,
-            pageUrl: `https://www.pinterest.com/${encodeURIComponent(username || "")}/`,
-            usage: "Please provide a Pinterest username\n\n*Example:* .pinstalk example",
-        });
+        const { q, reply, react, MalvinTechApi, MalvinApiKey, botName, botFooter } = conText;
+
+        if (!q) {
+            await react("❌");
+            return reply("Please provide a Pinterest username\n\n*Example:* .pinstalk example");
+        }
+
+        try {
+            await react("🔍");
+            // API expects the query param as "q", not "username"
+            const apiUrl = `${MalvinTechApi}/stalk/pinterest?apikey=${MalvinApiKey}&q=${encodeURIComponent(q)}`;
+            const { data } = await axios.get(apiUrl, { timeout: 15000 });
+
+            if (!data?.status || !data?.data) {
+                await react("❌");
+                return reply("Pinterest user not found.");
+            }
+
+            const r = data.data;
+            const stats = r.stats;
+
+            const message = `╭══〘〘 *PINTEREST STALK* 〙〙═⊷
+│↠📌 ${fancy("name", "smallcaps")}: ${r.full_name || "N/A"}
+│↠@ ${fancy("username", "smallcaps")}: ${r.username}
+│↠📝 ${fancy("bio", "smallcaps")}: ${r.bio || "No bio"}
+│↠🔗 ${fancy("website", "smallcaps")}: ${r.website || "N/A"}
+╰═════════════════⊷
+
+📊 *${fancy("statistics", "smallcaps")}*
+│↠📌 ${fancy("boards", "smallcaps")}: ${stats.boards.toLocaleString()}
+│↠👥 ${fancy("followers", "smallcaps")}: ${stats.followers.toLocaleString()}
+│↠👤 ${fancy("following", "smallcaps")}: ${stats.following.toLocaleString()}
+│↠❤️ ${fancy("likes", "smallcaps")}: ${stats.likes.toLocaleString()}
+│↠📌 ${fancy("pins", "smallcaps")}: ${stats.pins.toLocaleString()}
+│↠💾 ${fancy("saves", "smallcaps")}: ${stats.saves.toLocaleString()}
+╰═════════════════⊷
+`;
+
+            await sendButtons(Malvin, from, {
+                title: botName,
+                text: message,
+                footer: `> *${botFooter}*`,
+                image: { url: r.profile_image },
+                buttons: [
+                    {
+                        name: "cta_url",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "🔗 View Profile",
+                            url: r.profile_url,
+                        }),
+                    },
+                    {
+                        name: "cta_copy",
+                        buttonParamsJson: JSON.stringify({
+                            display_text: "📋 Copy Username",
+                            copy_code: r.username,
+                        }),
+                    },
+                ],
+            }, { quoted: mrxd });
+
+            await react("✅");
+
+        } catch (error) {
+            console.error("Pinterest stalk error:", error);
+            await react("❌");
+            reply("Failed to fetch Pinterest profile. Please check the username.");
+        }
     }
 );
 
@@ -356,7 +640,7 @@ mxd(
         const { reply, react, botFooter, botName } = conText;
 
         await react("🔍");
-
+        
         const message = `╭══〘〘 *STALK COMMANDS* 〙〙═⊷
 │↠🐙 .github <username> - GitHub profile
 │↠📸 .igstalk <username> - Instagram profile
@@ -367,15 +651,13 @@ mxd(
 ╰═════════════════⊷
 
 📝 *${fancy("examples", "smallcaps")}*
-│↠ .github MalvinTechInfo
+│↠ .github MalvinTechInfo 
 │↠ .igstalk cristiano
 │↠ .ttstalk malvintech
 │↠ .twitterstalk elonmusk
 │↠ .ytstalk @malvintech
 │↠ .pinstalk example
 ╰═════════════════⊷
-
-⚠️ ${fancy("no key needed - public info only", "smallcaps")}.
 `;
 
         await sendButtons(Malvin, from, {

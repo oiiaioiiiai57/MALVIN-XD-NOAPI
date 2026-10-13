@@ -35,20 +35,17 @@ const PROVIDERS = {
 };
 
 async function callAnimeApi(provider, params, conText) {
-    // No-key fallback: Jikan (MyAnimeList, free, no key) for search actions.
-    // Detail/chapter/stream actions were scraper-only on the old API.
-    const action = (params.action || "search").toLowerCase();
-    if (action === "search" || action === "home") {
-        const query = params.query || params.slug || "";
-        if (!query) throw new Error("Provide a search query.");
-        const res = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&limit=10`, {
-            timeout: 30000, validateStatus: () => true,
-        });
-        if (res.status === 429) throw new Error("Rate limited, retry in a few seconds.");
-        const list = res.data?.data || [];
-        return list.map(a => ({ title: a.title_english || a.title, type: a.type, rating: a.score ? `⭐ ${a.score}` : null, episodesCount: a.episodes, synopsis: a.synopsis, genres: (a.genres || []).map(g => g.name) }));
+    const { MalvinTechApi, MalvinApiKey } = conText;
+    const res = await axios.get(`${MalvinTechApi}/anime/${provider}`, {
+        params: { apikey: MalvinApiKey, ...params },
+        timeout: 30000,
+        validateStatus: () => true,
+    });
+    if (res.status >= 400 || res.data?.status === false) {
+        const { rawMessage } = classifyApiError(res.status, res.data);
+        throw new Error(rawMessage);
     }
-    throw new Error(`Action "${action}" needs MALVIN_API_KEY (scraper-only provider "${provider}"). Search works without key.`);
+    return res.data?.data;
 }
 
 // Generic renderer — duck-types the response since each provider's

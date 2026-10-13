@@ -63,7 +63,6 @@
     "util": "*",
     "wa-sticker-formatter": "*",
     "mongoose": "^8.4.0",
-    "play-dl": "^1.9.7",
     "yt-search" : "*"
   },
   "repository": {

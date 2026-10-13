@@ -13,29 +13,27 @@ const { fancy } = require("../king/fancyFont");
  * nests under .result, gemini under .text, etc).
  */
 async function queryAI(endpoint, paramName, query, conText, extractText) {
-  const { reply } = conText;
+  const { reply, MalvinTechApi, MalvinApiKey } = conText;
 
   if (!query) {
     return reply("Please provide a question or prompt.");
   }
 
   try {
-    // No-key backend: Pollinations text API (free, no key).
-    // System prefix keeps bibleai/gita personalities without extra endpoints.
-    const prefix = endpoint === "bibleai"
-      ? "Answer with Bible scripture references. Question: "
-      : endpoint === "gita"
-        ? "Answer with Bhagavad Gita wisdom. Question: "
-        : "";
-    const res = await axios.get(`https://text.pollinations.ai/${encodeURIComponent(prefix + query)}`, {
+    const res = await axios.get(`${MalvinTechApi}/ai/${endpoint}`, {
+      params: { apikey: MalvinApiKey, [paramName]: query },
       timeout: 100000,
       validateStatus: () => true,
-      headers: { Accept: "text/plain" },
     });
 
-    const text = typeof res.data === "string" ? res.data.trim() : extractText(res.data?.data) || JSON.stringify(res.data).slice(0, 2000);
-    if (!text) return reply("No response received.");
-    reply(text.slice(0, 3500));
+    if (res.status >= 400 || res.data?.status === false) {
+      const { rawMessage } = classifyApiError(res.status, res.data);
+      return reply(`Failed to get a response: ${rawMessage}`);
+    }
+
+    const responseText = extractText(res.data?.data);
+    if (!responseText) return reply("No response received.");
+    reply(typeof responseText === 'string' ? responseText : JSON.stringify(responseText));
   } catch (err) {
     console.error(`AI ${endpoint} error:`, err.message);
     reply("Error: " + err.message);
@@ -48,13 +46,22 @@ async function queryAI(endpoint, paramName, query, conText, extractText) {
  * fetches the URL and hands it straight to sendButtons.
  */
 async function generateImage(endpoint, params, conText, captionLabel, promptForCaption) {
-  const { reply, Malvin, from, botFooter, newsletterUrl } = conText;
+  const { reply, Malvin, from, MalvinTechApi, MalvinApiKey, botFooter, newsletterUrl } = conText;
 
   try {
-    // No-key backend: Pollinations image API (free, direct image URL).
-    const prompt = params.prompt || params.text || "abstract art";
-    const seed = Math.floor(Math.random() * 1000000);
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${seed}&nologo=true&model=flux`;
+    const res = await axios.get(`${MalvinTechApi}/ai/${endpoint}`, {
+      params: { apikey: MalvinApiKey, ...params },
+      timeout: 120000,
+      validateStatus: () => true,
+    });
+
+    if (res.status >= 400 || res.data?.status === false) {
+      const { rawMessage } = classifyApiError(res.status, res.data);
+      return reply(`Failed to generate image: ${rawMessage}`);
+    }
+
+    const imageUrl = res.data?.data?.image_url;
+    if (!imageUrl) return reply("No image generated.");
 
     await sendButtons(Malvin, from, {
       text: `🎨 *${captionLabel}*\n📝 ${promptForCaption}`,
