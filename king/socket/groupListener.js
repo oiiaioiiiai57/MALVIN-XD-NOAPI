@@ -168,7 +168,7 @@ const setupGroupEventsListeners = (Malvin) => {
                 (await getSetting("TIME_ZONE")) || "Africa/Harare";
             const botName = (await getSetting("BOT_NAME")) || fancy("MALVIN XD", "mono");
             const botFooter =
-                (await getSetting("FOOTER")) || fancy("POWERED BY MALVIN XD", "mono");
+                (await getSetting("FOOTER")) || fancy("XD", "mono");
             const newsletterJid = (await getSetting("NEWSLETTER_JID")) || "";
 
             const currentTime = moment().tz(timeZone).format("h:mm A");

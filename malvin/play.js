@@ -370,9 +370,10 @@ mxd(
     try {
       await react("🔍");
 
-      // A raw YouTube URL goes straight to clutchyt; a name/search term is
-      // resolved to a URL first via clutchplay's search.
+      // A raw YouTube URL goes straight to youtube2; a name/search term is
+      // resolved to a URL first via clutchplay's search (which also gives duration).
       let videoUrl = q;
+      let durationHint = null;
       if (!YT_URL_RE.test(q)) {
         const searchResult = await fetchFromClutchPlay(q, conText);
         if (!searchResult?.url) {
@@ -380,6 +381,7 @@ mxd(
           return reply("No video found for your query.");
         }
         videoUrl = searchResult.url;
+        durationHint = searchResult.duration || null;
       }
 
       const result = await fetchYoutube2(videoUrl, conText);
@@ -390,7 +392,7 @@ mxd(
       }
 
       const title = result.title || "Video";
-      const duration = result.duration || "N/A";
+      const duration = durationHint || result.duration || "N/A";
       const thumbnail = result.thumbnail;
       const videoId = result.video_id || Date.now().toString();
 
@@ -436,7 +438,7 @@ mxd(
         await sendButtons(Malvin, from, {
           title: `${botName} VIDEO DOWNLOADER`,
           text,
-          footer: botFooter,
+          footer: "> XD",
           image: await fetchThumb(thumbnail, botPic),
           buttons: link
             ? [{ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "📥 Download Video", url: link }) }]
