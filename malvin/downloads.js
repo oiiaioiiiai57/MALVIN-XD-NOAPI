@@ -92,6 +92,33 @@ function ytVideoUrl(videoUrl) {
     });
 }
 
+// Browser-like media downloader (googlevideo rejects bare requests with 403).
+async function dlMedia(url) {
+    const headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.youtube.com/",
+        "Origin": "https://www.youtube.com",
+        "Range": "bytes=0-",
+    };
+    const attempt = (hdrs) => axios.get(url, {
+        responseType: "arraybuffer", timeout: 180000, maxRedirects: 5,
+        headers: hdrs, validateStatus: (s) => (s >= 200 && s < 300) || s === 416,
+    });
+    try {
+        const res = await attempt(headers);
+        return Buffer.from(res.data);
+    } catch (e) {
+        if (e?.response && [403, 416].includes(e.response.status)) {
+            const { Range, ...noRange } = headers;
+            const res2 = await attempt(noRange);
+            return Buffer.from(res2.data);
+        }
+        throw e;
+    }
+}
+
 async function tikwmFetch(pageUrl) {
     // TikWM rejects short links (vm/vt.tiktok.com) — resolve to canonical first.
     let canonical = pageUrl.trim().split(/\s+/)[0];
@@ -216,7 +243,7 @@ async function sendCobaltChoices(from, Malvin, conText, opts) {
         await react("⬇️");
         try {
             if (selectedButtonId.startsWith(`${tag}_audio`)) {
-                const videoBuffer = await mxdBuffer(fileUrl);
+                const videoBuffer = await dlMedia(fileUrl);
                 if (!isValidBuffer(videoBuffer)) throw new Error("bad buffer");
                 const audioBuffer = await toAudio(videoBuffer);
                 if (audioBuffer.length > MAX_MEDIA_SIZE) {
@@ -385,7 +412,7 @@ mxd(
                 return reply("No tracks found. Try a different song name.");
             }
             const { url: fileUrl } = { url: await ytAudioUrl(v.url) };
-            const audioBuffer = await mxdBuffer(fileUrl);
+            const audioBuffer = await dlMedia(fileUrl);
             if (!isValidBuffer(audioBuffer)) {
                 await react("❌");
                 return reply("Failed to download audio.");

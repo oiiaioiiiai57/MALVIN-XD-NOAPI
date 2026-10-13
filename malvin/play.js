@@ -102,6 +102,34 @@ function pickVideoUrl(formats) {
     return withBypass(best.url);
 }
 
+// Browser-like media downloader (googlevideo rejects bare requests with 403).
+// Accepts 2xx + 416, retries once without Range on 403/416.
+async function dlMedia(url) {
+    const headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.youtube.com/",
+        "Origin": "https://www.youtube.com",
+        "Range": "bytes=0-",
+    };
+    const attempt = (hdrs) => axios.get(url, {
+        responseType: "arraybuffer", timeout: 180000, maxRedirects: 5,
+        headers: hdrs, validateStatus: (s) => (s >= 200 && s < 300) || s === 416,
+    });
+    try {
+        const res = await attempt(headers);
+        return Buffer.from(res.data);
+    } catch (e) {
+        if (e?.response && [403, 416].includes(e.response.status)) {
+            const { Range, ...noRange } = headers;
+            const res2 = await attempt(noRange);
+            return Buffer.from(res2.data);
+        }
+        throw e;
+    }
+}
+
 async function fetchFromClutchPlay(query, conText) {
     const found = await searchYoutube(query);
     const formats = await ytDirectFormats(found.url);
@@ -232,7 +260,7 @@ mxd(
       const videoId = result.video_id || Date.now().toString();
       const watchUrl = result.url;
 
-      let bufferRes = await mxdBuffer(result.audio);
+      let bufferRes = await dlMedia(result.audio);
 
       if (!isValidBuffer(bufferRes)) {
         await react("❌");
@@ -378,7 +406,7 @@ mxd(
       const thumbnail = result.thumbnail;
       const videoId = result.video_id || Date.now().toString();
 
-      let buffer = await mxdBuffer(result.video);
+      let buffer = await dlMedia(result.video);
 
       if (!isValidBuffer(buffer)) {
         await react("❌");
