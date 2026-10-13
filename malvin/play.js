@@ -54,10 +54,12 @@ async function sendProgress(Malvin, chat, label) {
         if (key) await Malvin.sendMessage(chat, { delete: key }).catch(() => {});
         key = nm?.key || null;
     };
-    const update = async (pct) => {
+    const update = async (pct, newLabel) => {
         pct = Math.max(0, Math.min(100, Math.floor(pct)));
+        let force = false;
+        if (newLabel && newLabel !== label) { label = newLabel; force = true; }
         const now = Date.now();
-        if (pct <= last || (pct < 100 && (pct - last < 5 || now - lastTime < 2000))) return;
+        if (!force && (pct <= last || (pct < 100 && (pct - last < 5 || now - lastTime < 2000)))) return;
         last = pct; lastTime = now;
         try {
             if (!key) throw new Error("no-key");
@@ -297,11 +299,14 @@ mxd(
 
     try {
       await react("🔍");
+      const prog = await sendProgress(Malvin, from, `🎶 ${q}`);
+      await prog.setText(`🔍 *Recherche:* ${q}...`);
 
       const result = await fetchFromClutchPlay(q, conText);
 
       if (!result?.audio) {
         await react("❌");
+        await prog.setText(`❌ Not found.`);
         return reply("Failed to fetch audio. Please try again.");
       }
 
@@ -311,7 +316,7 @@ mxd(
       const videoId = result.video_id || Date.now().toString();
       const watchUrl = result.url;
 
-      const prog = await sendProgress(Malvin, from, `🎶 *Downloading:* ${title}`);
+      await prog.update(0, `🎶 *Downloading:* ${title}`);
       let bufferRes;
       try {
         const chunks = [];
@@ -445,6 +450,8 @@ mxd(
 
     try {
       await react("🔍");
+      const prog = await sendProgress(Malvin, from, `🎥 ${q}`);
+      await prog.setText(`🔍 *Recherche:* ${q}...`);
 
       // A raw YouTube URL goes straight to youtube2; a name/search term is
       // resolved to a URL first via clutchplay's search (which also gives duration).
@@ -454,6 +461,7 @@ mxd(
         const searchResult = await fetchFromClutchPlay(q, conText);
         if (!searchResult?.url) {
           await react("❌");
+          await prog.setText(`❌ Not found.`);
           return reply("No video found for your query.");
         }
         videoUrl = searchResult.url;
@@ -475,7 +483,7 @@ mxd(
       // No-RAM flow (no more OOM restarts): stream to a temp file, upload to a
       // temporary host, send a temporary link. Temp file is always deleted.
       await react("⬇️");
-      const prog = await sendProgress(Malvin, from, `🎥 *Downloading:* ${title}`);
+      await prog.update(0, `🎥 *Downloading:* ${title}`);
       const tmpPath = path.join(os.tmpdir(), `mxd_dl_${Date.now().toString(36)}.mp4`);
       try {
         const w = fs.createWriteStream(tmpPath);
