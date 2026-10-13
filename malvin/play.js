@@ -1,5 +1,29 @@
 const { mxd } = require("../king");
 const axios = require("axios");
+const { execFile } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+// The worker serves AV1-in-MP4 which WhatsApp can't play inline.
+// Re-encode to H.264+AAC with faststart via the Railway ffmpeg binary.
+async function toWhatsappMp4(inputBuffer) {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const inp = path.join(os.tmpdir(), `mxd_in_${id}.mp4`);
+    const out = path.join(os.tmpdir(), `mxd_out_${id}.mp4`);
+    fs.writeFileSync(inp, inputBuffer);
+    try {
+        await new Promise((resolve, reject) => {
+            execFile("ffmpeg", ["-y", "-i", inp, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest", out],
+                { timeout: 600000 }, (err) => err ? reject(err) : resolve());
+        });
+        return fs.readFileSync(out);
+    } finally {
+        fs.rmSync(inp, { force: true });
+        fs.rmSync(out, { force: true });
+    }
+}
 
 function extractButtonId(msg) {
     if (!msg) return null;
@@ -457,7 +481,13 @@ mxd(
         try {
           if (selectedButtonId.startsWith('vid_')) {
             if (!cachedBuffer) cachedBuffer = buffer;
-            const formattedVideo = await formatVideo(cachedBuffer);
+            let formattedVideo;
+            try {
+              formattedVideo = await toWhatsappMp4(cachedBuffer);
+            } catch (convErr) {
+              console.error("ffmpeg convert failed, using fallback:", convErr.message);
+              formattedVideo = await formatVideo(cachedBuffer);
+            }
             await Malvin.sendMessage(from, {
               video: formattedVideo,
               mimetype: "video/mp4",
