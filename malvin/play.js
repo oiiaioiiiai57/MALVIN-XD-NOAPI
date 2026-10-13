@@ -45,6 +45,19 @@ function describeError(error) {
     return String(error);
 }
 
+// Direct media download with a long timeout (the core mxdBuffer times out
+// at 30s, too short for big video files on slow links).
+async function dlMedia(url, ms = 300000) {
+    const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: ms,
+        maxRedirects: 5,
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36" },
+        validateStatus: (s) => s >= 200 && s < 300,
+    });
+    return Buffer.from(res.data);
+}
+
 // ==================== CLUTCH (search + download, single source) ====================
 // GET /download/clutchplay?query= — searches by name, returns a ready MP3
 // link plus metadata in one call.
@@ -342,7 +355,7 @@ mxd(
       const thumbnail = result.thumbnail;
       const videoId = result.video_id || Date.now().toString();
 
-      let buffer = await mxdBuffer(result.video);
+      let buffer = await dlMedia(result.video);
 
       if (!isValidBuffer(buffer)) {
         await react("❌");
