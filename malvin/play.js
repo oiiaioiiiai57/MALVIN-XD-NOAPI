@@ -75,16 +75,39 @@ async function fetchThumb(thumbnail, botPic) {
 // link plus metadata in one call.
 async function fetchFromClutchPlay(query, conText) {
     const { MalvinTechApi, MalvinApiKey } = conText;
-    const res = await axios.get(`${MalvinTechApi}/download/clutchplay`, {
-        params: { apikey: MalvinApiKey, query },
-        timeout: 120000,
+    // The endpoint is flaky (occasional HTTP 500) — retry once before giving up.
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        const res = await axios.get(`${MalvinTechApi}/download/clutchplay`, {
+            params: { apikey: MalvinApiKey, query },
+            timeout: 120000,
+            validateStatus: () => true,
+        });
+        if (res.status < 400 && res.data?.status !== false && res.data?.data) return res.data.data;
+        lastErr = new Error(res.data?.error || res.data?.message || `Search failed (HTTP ${res.status})`);
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    throw lastErr;
+}
+
+// youtube2 resolver (clutchyt currently returns HTTP 500 server-side).
+// Shape: { title, thumbnail, audio, videos: {144..1080} }.
+async function fetchYoutube2(videoUrl, conText) {
+    const { MalvinTechApi, MalvinApiKey } = conText;
+    const res = await axios.get(`${MalvinTechApi}/download/youtube2`, {
+        params: { apikey: MalvinApiKey, url: videoUrl },
+        timeout: 180000,
         validateStatus: () => true,
     });
     if (res.status >= 400 || res.data?.status === false) {
         const apiMessage = res.data?.error || res.data?.message;
-        throw new Error(apiMessage || `Search failed (HTTP ${res.status})`);
+        throw new Error(apiMessage || `Video fetch failed (HTTP ${res.status})`);
     }
-    return res.data?.data;
+    const d = res.data?.data || {};
+    const videos = d.videos || {};
+    const video = videos["720"] || videos["480"] || videos["360"] || videos["1080"] || Object.values(videos)[0];
+    if (!video) throw new Error("No downloadable video format found.");
+    return { title: d.title, duration: d.duration || "N/A", thumbnail: d.thumbnail, video_id: Date.now().toString(), url: videoUrl, video };
 }
 
 // GET /download/clutchyt?url=&quality= — resolves a specific YouTube URL at
@@ -355,7 +378,7 @@ mxd(
         videoUrl = searchResult.url;
       }
 
-      const result = await fetchFromClutchYoutube(videoUrl, conText, "720");
+      const result = await fetchYoutube2(videoUrl, conText);
 
       if (!result?.video) {
         await react("❌");
