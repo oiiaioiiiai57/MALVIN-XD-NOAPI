@@ -46,8 +46,24 @@ const isValidBuffer = (buf) => Buffer.isBuffer(buf) && buf.length > 10240;
 // - X/Twitter: fxtwitter public API (alive, no key).
 // - Facebook: fdown.net form scrape. Instagram: public embed scrape.
 // - Pinterest: official pidgets widget API (no key).
+// Optional YT_COOKIE env (paste of your logged-in YouTube request cookies).
+// Lets play-dl pass YouTube's bot check on datacenter IPs.
+// Never commit the value — set it in Railway Variables.
+let ytCookieApplied = false;
+async function applyYtCookie(play) {
+    if (ytCookieApplied) return;
+    ytCookieApplied = true;
+    const cookie = process.env.YT_COOKIE;
+    if (!cookie) return;
+    try {
+        await play.setToken({ youtube: { cookie } });
+        console.log("[play-dl] YT_COOKIE applied.");
+    } catch (e) { console.error("[play-dl] YT_COOKIE failed:", e.message); }
+}
+
 async function ytDirectFormats(videoUrl) {
     const play = require("play-dl");
+    await applyYtCookie(play);
     const info = await play.video_info(videoUrl);
     const formats = (info?.format || []).filter(f => f.url);
     if (!formats.length) throw new Error("YouTube gave no playable stream (bot protection). Retry later or from another host.");
