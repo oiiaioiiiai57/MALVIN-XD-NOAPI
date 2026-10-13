@@ -1,29 +1,9 @@
 const { mxd } = require("../king");
 const axios = require("axios");
-const { execFile } = require("child_process");
+const FormData = require("form-data");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-
-// The worker serves AV1-in-MP4 which WhatsApp can't play inline.
-// Re-encode to H.264+AAC with faststart via the Railway ffmpeg binary.
-async function toWhatsappMp4(inputBuffer) {
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    const inp = path.join(os.tmpdir(), `mxd_in_${id}.mp4`);
-    const out = path.join(os.tmpdir(), `mxd_out_${id}.mp4`);
-    fs.writeFileSync(inp, inputBuffer);
-    try {
-        await new Promise((resolve, reject) => {
-            execFile("ffmpeg", ["-y", "-i", inp, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest", out],
-                { timeout: 600000 }, (err) => err ? reject(err) : resolve());
-        });
-        return fs.readFileSync(out);
-    } finally {
-        fs.rmSync(inp, { force: true });
-        fs.rmSync(out, { force: true });
-    }
-}
 
 function extractButtonId(msg) {
     if (!msg) return null;
@@ -414,104 +394,58 @@ mxd(
       const thumbnail = result.thumbnail;
       const videoId = result.video_id || Date.now().toString();
 
-      let buffer = await dlMedia(result.video);
-
-      if (!isValidBuffer(buffer)) {
-        await react("❌");
-        return reply("Failed to download video. Please try again later.");
-      }
-
-      const sizeMB = buffer.length / (1024 * 1024);
-
-      if (sizeMB > 100) {
-        await react("📄");
-        const convertedBuffer = await formatVideo(buffer);
-        await Malvin.sendMessage(from, {
-          document: convertedBuffer,
-          mimetype: "video/mp4",
-          fileName: `${title}.mp4`.replace(/[^\w\s.-]/gi, ""),
-          caption: `⿻ *Title:* ${title}\n⿻ *Duration:* ${duration}\n\n_File too large — sent as document_`,
+      // No-RAM flow (no more OOM restarts): stream to a temp file, upload to a
+      // temporary host, send a temporary link. Temp file is always deleted.
+      await react("⬇️");
+      const tmpPath = path.join(os.tmpdir(), `mxd_dl_${Date.now().toString(36)}.mp4`);
+      try {
+        const dl = await axios.get(result.video, {
+          responseType: "stream",
+          timeout: 600000,
+          maxRedirects: 5,
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36" },
+          validateStatus: (s) => s >= 200 && s < 300,
         });
-        return;
-      }
-
-      if (sizeMB > 20) {
-        await reply("File is large, processing might take a while...");
-      }
-
-      const dateNow = Date.now();
-      const buttonId = `video_${videoId}_${dateNow}`;
-
-      const buttons = [
-        { id: `vid_${buttonId}`, text: "Video 🎥" },
-        { id: `doc_${buttonId}`, text: "Video Document 📄" },
-      ];
-      if (result.url) {
-        buttons.push({
-          name: "cta_url",
-          buttonParamsJson: JSON.stringify({
-            display_text: "Watch on Youtube",
-            url: result.url,
-          }),
+        await new Promise((resolve, reject) => {
+          const w = fs.createWriteStream(tmpPath);
+          dl.data.pipe(w);
+          w.on("finish", resolve);
+          w.on("error", reject);
+          dl.data.on("error", reject);
         });
-      }
-
-      await sendButtons(Malvin, from, {
-        title: `${botName} VIDEO DOWNLOADER`,
-        text: `⿻ *Title:* ${title}\n⿻ *Duration:* ${duration}\n\n*Select download format:*`,
-        footer: botFooter,
-        image: await fetchThumb(thumbnail, botPic),
-        buttons,
-      });
-
-      let cachedBuffer = null;
-
-      const handleResponse = async (event) => {
-        const messageData = event.messages[0];
-        if (!messageData.message) return;
-
-        const selectedButtonId = extractButtonId(messageData.message);
-        if (!selectedButtonId) return;
-
-        const isFromSameChat = messageData.key?.remoteJid === from;
-        if (!isFromSameChat || !selectedButtonId.includes(dateNow.toString())) return;
-
-        await react("⬇️");
-
-        try {
-          if (selectedButtonId.startsWith('vid_')) {
-            if (!cachedBuffer) cachedBuffer = buffer;
-            let formattedVideo;
-            try {
-              formattedVideo = await toWhatsappMp4(cachedBuffer);
-            } catch (convErr) {
-              console.error("ffmpeg convert failed, using fallback:", convErr.message);
-              formattedVideo = await formatVideo(cachedBuffer);
-            }
-            await Malvin.sendMessage(from, {
-              video: formattedVideo,
-              mimetype: "video/mp4",
-              caption: `🎥 ${title}`,
-            }, { quoted: messageData });
-          }
-          else if (selectedButtonId.startsWith('doc_')) {
-            await Malvin.sendMessage(from, {
-              document: buffer,
-              mimetype: "video/mp4",
-              fileName: `${title}.mp4`.replace(/[^\w\s.-]/gi, ""),
-              caption: `📄 ${title}`,
-            }, { quoted: messageData });
-          }
-          await react("✅");
-        } catch (error) {
-          console.error("Error sending media:", error);
-          await react("❌");
-          await Malvin.sendMessage(from, { text: "Failed to send media. Please try again." }, { quoted: messageData });
+        const { size } = fs.statSync(tmpPath);
+        if (size < 10240) throw new Error("Downloaded file too small.");
+        let link = null;
+        if (size < 120 * 1024 * 1024) {
+          const form = new FormData();
+          form.append("files[]", fs.createReadStream(tmpPath), { filename: `${title}.mp4`.replace(/[^\w\s.-]/gi, "") || "video.mp4" });
+          try {
+            const up = await axios.post("https://uguu.se/upload.php?output=json", form, {
+              headers: { ...form.getHeaders(), "User-Agent": "Mozilla/5.0" },
+              timeout: 600000,
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity,
+            });
+            link = up.data?.files?.[0]?.url || null;
+          } catch (upErr) { console.error("uguu upload failed:", upErr.message); }
         }
-      };
-
-      Malvin.ev.on("messages.upsert", handleResponse);
-      setTimeout(() => Malvin.ev.off("messages.upsert", handleResponse), 300000);
+        const sizeMB = (size / (1024 * 1024)).toFixed(1);
+        const text = link
+          ? `⿻ *Title:* ${title}\n⿻ *Duration:* ${duration}\n⿻ *Size:* ${sizeMB} MB\n\n🔗 *Download link (temporary, ~3h):*\n${link}`
+          : `⿻ *Title:* ${title}\n⿻ *Duration:* ${duration}\n⿻ *Size:* ${sizeMB} MB\n\n🔗 *Direct link:*\n${result.video}`;
+        await sendButtons(Malvin, from, {
+          title: `${botName} VIDEO DOWNLOADER`,
+          text,
+          footer: botFooter,
+          image: await fetchThumb(thumbnail, botPic),
+          buttons: link
+            ? [{ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "📥 Download Video", url: link }) }]
+            : [{ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "▶️ Watch/Download", url: result.video }) }],
+        });
+        await react("✅");
+      } finally {
+        fs.rmSync(tmpPath, { force: true });
+      }
 
     } catch (error) {
       console.error("Error:", error);
