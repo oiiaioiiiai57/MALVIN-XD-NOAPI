@@ -58,6 +58,18 @@ async function dlMedia(url, ms = 300000) {
     return Buffer.from(res.data);
 }
 
+// Pre-download the thumbnail ourselves (long timeout) so the button lib
+// doesn't fetch the URL with its own short timeout. Falls back to botPic URL.
+async function fetchThumb(thumbnail, botPic) {
+    if (thumbnail) {
+        try {
+            const tb = await dlMedia(thumbnail, 60000);
+            if (Buffer.isBuffer(tb) && tb.length > 1024) return tb;
+        } catch (_) {}
+    }
+    return { url: botPic };
+}
+
 // ==================== CLUTCH (search + download, single source) ====================
 // GET /download/clutchplay?query= — searches by name, returns a ready MP3
 // link plus metadata in one call.
@@ -250,7 +262,7 @@ mxd(
         title: `${botName} SONG DOWNLOADER`,
         text: `⿻ *Title:* ${title}\n⿻ *Duration:* ${duration}\n\n*Select download format:*`,
         footer: botFooter,
-        image: { url: thumbnail || botPic },
+        image: await fetchThumb(thumbnail, botPic),
         buttons,
       });
 
@@ -401,7 +413,7 @@ mxd(
         title: `${botName} VIDEO DOWNLOADER`,
         text: `⿻ *Title:* ${title}\n⿻ *Duration:* ${duration}\n\n*Select download format:*`,
         footer: botFooter,
-        image: { url: thumbnail || botPic },
+        image: await fetchThumb(thumbnail, botPic),
         buttons,
       });
 
