@@ -33,6 +33,69 @@ const { sendButtons } = require("malvin-btns");
 const isValidBuffer = (buf) => Buffer.isBuffer(buf) && buf.length > 10240;
 const YT_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/i;
 
+function progressBar(pct) {
+    const filled = Math.max(0, Math.min(10, Math.round(pct / 10)));
+    return "█".repeat(filled) + "░".repeat(10 - filled);
+}
+
+// Live % progress message: edited in place when supported, otherwise
+// replaced (old copy deleted, best effort). Throttled to avoid spam.
+async function sendProgress(Malvin, chat, label) {
+    let key = null;
+    try {
+        const sent = await Malvin.sendMessage(chat, { text: `${label}\n0% ${progressBar(0)}` });
+        key = sent?.key || null;
+    } catch (_) {}
+    let last = -1;
+    let lastTime = 0;
+    const render = (pct) => `${label}\n${pct}% ${progressBar(pct)}`;
+    const swap = async (text) => {
+        const nm = await Malvin.sendMessage(chat, { text });
+        if (key) await Malvin.sendMessage(chat, { delete: key }).catch(() => {});
+        key = nm?.key || null;
+    };
+    const update = async (pct) => {
+        pct = Math.max(0, Math.min(100, Math.floor(pct)));
+        const now = Date.now();
+        if (pct <= last || (pct < 100 && (pct - last < 5 || now - lastTime < 2000))) return;
+        last = pct; lastTime = now;
+        try {
+            if (!key) throw new Error("no-key");
+            await Malvin.sendMessage(chat, { text: render(pct), edit: key });
+        } catch (_) {
+            try { await swap(render(pct)); last = pct; lastTime = now; } catch (_) {}
+        }
+    };
+    const setText = async (text) => {
+        try {
+            if (!key) throw new Error("no-key");
+            await Malvin.sendMessage(chat, { text, edit: key });
+        } catch (_) {
+            try { await swap(text); } catch (_) {}
+        }
+    };
+    return { update, setText };
+}
+
+// Streamed GET with byte progress (caller chooses buffer vs file).
+async function dlStream(url, onData, extraHeaders = {}) {
+    const res = await axios.get(url, {
+        responseType: "stream",
+        timeout: 600000,
+        maxRedirects: 5,
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36", ...extraHeaders },
+        validateStatus: (s) => s >= 200 && s < 300,
+    });
+    const total = parseInt(res.headers["content-length"] || "0", 10) || 0;
+    let received = 0;
+    await new Promise((resolve, reject) => {
+        res.data.on("data", (c) => { received += c.length; onData(c, received, total); });
+        res.data.on("end", () => resolve());
+        res.data.on("error", reject);
+    });
+    return { total, received };
+}
+
 // Safely turn any thrown value into a short, readable string for WhatsApp.
 function describeError(error) {
     if (!error) return "Unknown error (nothing was thrown)";
@@ -248,7 +311,20 @@ mxd(
       const videoId = result.video_id || Date.now().toString();
       const watchUrl = result.url;
 
-      let bufferRes = await mxdBuffer(result.audio);
+      const prog = await sendProgress(Malvin, from, `🎶 *Downloading:* ${title}`);
+      let bufferRes;
+      try {
+        const chunks = [];
+        await dlStream(result.audio, (c, received, total) => {
+          chunks.push(c);
+          if (total) prog.update(received / total * 100);
+        });
+        bufferRes = Buffer.concat(chunks);
+        await prog.update(100);
+      } catch (dlErr) {
+        await prog.setText(`❌ Download failed.`);
+        throw dlErr;
+      }
 
       if (!isValidBuffer(bufferRes)) {
         await react("❌");
@@ -399,22 +475,17 @@ mxd(
       // No-RAM flow (no more OOM restarts): stream to a temp file, upload to a
       // temporary host, send a temporary link. Temp file is always deleted.
       await react("⬇️");
+      const prog = await sendProgress(Malvin, from, `🎥 *Downloading:* ${title}`);
       const tmpPath = path.join(os.tmpdir(), `mxd_dl_${Date.now().toString(36)}.mp4`);
       try {
-        const dl = await axios.get(result.video, {
-          responseType: "stream",
-          timeout: 600000,
-          maxRedirects: 5,
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36" },
-          validateStatus: (s) => s >= 200 && s < 300,
+        const w = fs.createWriteStream(tmpPath);
+        await dlStream(result.video, (c, received, total) => {
+          w.write(c);
+          if (total) prog.update(received / total * 100);
         });
-        await new Promise((resolve, reject) => {
-          const w = fs.createWriteStream(tmpPath);
-          dl.data.pipe(w);
-          w.on("finish", resolve);
-          w.on("error", reject);
-          dl.data.on("error", reject);
-        });
+        await new Promise((resolve, reject) => { w.end(resolve); w.on("error", reject); });
+        await prog.update(100);
+        await prog.setText(`⬆️ *Uploading:* ${title}`);
         const { size } = fs.statSync(tmpPath);
         if (size < 10240) throw new Error("Downloaded file too small.");
         let link = null;
